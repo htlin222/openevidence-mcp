@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/readme-hero.svg" alt="OpenEvidence MCP banner" width="100%" />
-</p>
-
 <h1 align="center">OpenEvidence MCP (Cookie Auth Fork)</h1>
 
 <p align="center">
