@@ -36,6 +36,8 @@ Tools:
 | `oe_article_get` | Fetch an article by id and save artifacts |
 | `oe_ask` | Ask a question, optionally wait, and save artifacts |
 
+`oe_ask` and `oe_article_get` return BibTeX in the MCP response by default when artifacts are saved. Pass `include_bibtex: false` to keep the response smaller while still writing `citations.bib` to disk.
+
 Saved artifacts:
 
 | File | Purpose |

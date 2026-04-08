@@ -58,6 +58,7 @@ server.registerTool(
       article_id: z.string().uuid(),
       save_artifacts: z.boolean().default(true).optional(),
       crossref_validate: z.boolean().default(true).optional(),
+      include_bibtex: z.boolean().default(true).optional(),
     }),
   },
   async (args) =>
@@ -72,7 +73,7 @@ server.registerTool(
       return ok({
         article,
         extracted_answer_raw: extractAnswerText(article),
-        artifacts,
+        artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
       });
     }),
 );
@@ -95,6 +96,7 @@ server.registerTool(
       variant_configuration_file: z.string().default("prod").optional(),
       save_artifacts: z.boolean().default(true).optional(),
       crossref_validate: z.boolean().default(true).optional(),
+      include_bibtex: z.boolean().default(true).optional(),
     }),
   },
   async (args) =>
@@ -139,10 +141,24 @@ server.registerTool(
         article,
         article_id: articleId,
         extracted_answer_raw: extractAnswerText(article),
-        artifacts,
+        artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
       });
     }),
 );
+
+function formatArtifactsForResponse(
+  artifacts: Awaited<ReturnType<typeof saveArticleArtifacts>> | null,
+  includeBibtex: boolean,
+) {
+  if (!artifacts) {
+    return null;
+  }
+  if (includeBibtex) {
+    return artifacts;
+  }
+  const { bibtex, ...rest } = artifacts;
+  return rest;
+}
 
 async function withClient(
   fn: (client: OpenEvidenceClient) => Promise<{

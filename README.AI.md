@@ -139,6 +139,8 @@ Then MCP-side checks:
 - `oe_history_list`
 - `oe_ask`
 
+`oe_ask` and `oe_article_get` include `artifacts.bibtex` in their MCP response by default when artifacts are saved. Use `include_bibtex: false` if the client needs a smaller response.
+
 ## Step 5: Recovery Paths
 
 - If `oe_auth_status` is unauthenticated: export fresh cookies and rerun `npm run login`

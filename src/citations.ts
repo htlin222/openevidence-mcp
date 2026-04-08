@@ -39,6 +39,7 @@ export interface ArticleArtifacts {
   citationsJsonPath: string;
   bibPath: string;
   crossrefValidationPath: string;
+  bibtex?: string;
   citationCount: number;
   crossrefValidatedCount: number;
 }
@@ -109,6 +110,7 @@ export async function saveArticleArtifacts(
         ...citation,
         crossref: { status: "skipped", method: "none" } as CrossrefValidation,
       }));
+  const bibtex = citationsToBibTeX(validatedCitations);
 
   const articlePath = path.join(artifactDir, "article.json");
   const answerPath = path.join(artifactDir, "answer.md");
@@ -119,7 +121,7 @@ export async function saveArticleArtifacts(
   await writeFile(articlePath, `${JSON.stringify(article, null, 2)}\n`);
   await writeFile(answerPath, answer);
   await writeFile(citationsJsonPath, `${JSON.stringify(validatedCitations, null, 2)}\n`);
-  await writeFile(bibPath, `${citationsToBibTeX(validatedCitations)}\n`);
+  await writeFile(bibPath, `${bibtex}\n`);
   await writeFile(
     crossrefValidationPath,
     `${JSON.stringify(
@@ -142,6 +144,7 @@ export async function saveArticleArtifacts(
     citationsJsonPath,
     bibPath,
     crossrefValidationPath,
+    bibtex,
     citationCount: validatedCitations.length,
     crossrefValidatedCount: validatedCitations.filter(
       (citation) => citation.crossref?.status === "validated",

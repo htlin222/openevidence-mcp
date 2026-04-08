@@ -102,6 +102,7 @@ test("saves article, answer, citations, BibTeX, and validation artifacts", async
 
     assert.equal(artifacts.citationCount, 2);
     assert.equal(artifacts.crossrefValidatedCount, 1);
+    assert.match(artifacts.bibtex ?? "", /@article\{TillyH2022Polatuzumab,/);
     assert.match(await readFile(artifacts.answerPath, "utf8"), /POLARIX/);
     assert.match(await readFile(artifacts.bibPath, "utf8"), /@article\{TillyH2022Polatuzumab,/);
     assert.equal(
