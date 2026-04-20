@@ -73,7 +73,7 @@ server.registerTool(
             })
           : null;
       return ok({
-        article,
+        article_id: args.article_id,
         extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
         figures,
         artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
@@ -142,9 +142,8 @@ server.registerTool(
           : null;
 
       return ok({
-        created,
-        article,
         article_id: articleId,
+        status: String(article.status ?? ""),
         extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
         figures,
         artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
