@@ -5,9 +5,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { saveArticleArtifacts } from "./citations.js";
+import { extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
-import { extractAnswerText, OpenEvidenceClient } from "./openevidence-client.js";
+import { extractAnswerText, OpenEvidenceClient, resolveVisualTags } from "./openevidence-client.js";
 import type { OpenEvidenceAskRequest } from "./types.js";
 
 const config = resolveConfig();
@@ -64,6 +64,8 @@ server.registerTool(
   async (args) =>
     withClient(async (client) => {
       const article = await client.getArticle(args.article_id);
+      const figures = extractFigures(article);
+      const answerRaw = extractAnswerText(article);
       const artifacts =
         args.save_artifacts ?? true
           ? await saveArticleArtifacts(article, config, {
@@ -72,7 +74,8 @@ server.registerTool(
           : null;
       return ok({
         article,
-        extracted_answer_raw: extractAnswerText(article),
+        extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
+        figures,
         artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
       });
     }),
@@ -129,6 +132,8 @@ server.registerTool(
         timeoutMs: (args.timeout_sec ?? 120) * 1000,
         intervalMs: args.poll_interval_ms ?? config.pollIntervalMs,
       });
+      const figures = extractFigures(article);
+      const answerRaw = extractAnswerText(article);
       const artifacts =
         args.save_artifacts ?? true
           ? await saveArticleArtifacts(article, config, {
@@ -140,7 +145,8 @@ server.registerTool(
         created,
         article,
         article_id: articleId,
-        extracted_answer_raw: extractAnswerText(article),
+        extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
+        figures,
         artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
       });
     }),

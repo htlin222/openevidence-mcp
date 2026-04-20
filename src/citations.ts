@@ -2,7 +2,14 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { AppConfig } from "./config.js";
-import { extractAnswerText } from "./openevidence-client.js";
+import {
+  extractAnswerText,
+  extractFiguresFromText,
+  resolveVisualTags,
+  type FigureRecord,
+} from "./openevidence-client.js";
+
+export type { FigureRecord };
 
 export interface CitationRecord {
   key: string;
@@ -17,6 +24,7 @@ export interface CitationRecord {
   journal?: string;
   publicationInfo?: string;
   pageImage?: string;
+  figures?: FigureRecord[];
   crossref?: CrossrefValidation;
 }
 
@@ -39,9 +47,11 @@ export interface ArticleArtifacts {
   citationsJsonPath: string;
   bibPath: string;
   crossrefValidationPath: string;
+  figuresJsonPath: string;
   bibtex?: string;
   citationCount: number;
   crossrefValidatedCount: number;
+  figureCount: number;
 }
 
 export interface CrossrefLookup {
@@ -54,7 +64,7 @@ interface CitationInput {
   metadata?: {
     citation_detail?: CitationDetail;
     content_metadata?: {
-      figures?: { url?: unknown }[];
+      figures?: { url?: unknown; name?: unknown; caption?: unknown }[];
     };
   };
 }
@@ -102,6 +112,8 @@ export async function saveArticleArtifacts(
   await mkdir(artifactDir, { recursive: true });
 
   const answer = extractAnswerText(article) ?? "";
+  const figures = extractFigures(article);
+  const resolvedAnswer = resolveVisualTags(answer, figures);
   const citations = extractCitations(article, answer);
   const shouldValidate = options?.validateWithCrossref ?? config.crossrefValidate;
   const validatedCitations = shouldValidate
@@ -117,9 +129,10 @@ export async function saveArticleArtifacts(
   const citationsJsonPath = path.join(artifactDir, "citations.json");
   const bibPath = path.join(artifactDir, "citations.bib");
   const crossrefValidationPath = path.join(artifactDir, "crossref-validation.json");
+  const figuresJsonPath = path.join(artifactDir, "figures.json");
 
   await writeFile(articlePath, `${JSON.stringify(article, null, 2)}\n`);
-  await writeFile(answerPath, answer);
+  await writeFile(answerPath, resolvedAnswer);
   await writeFile(citationsJsonPath, `${JSON.stringify(validatedCitations, null, 2)}\n`);
   await writeFile(bibPath, `${bibtex}\n`);
   await writeFile(
@@ -136,6 +149,7 @@ export async function saveArticleArtifacts(
       2,
     )}\n`,
   );
+  await writeFile(figuresJsonPath, `${JSON.stringify(figures, null, 2)}\n`);
 
   return {
     artifactDir,
@@ -144,11 +158,13 @@ export async function saveArticleArtifacts(
     citationsJsonPath,
     bibPath,
     crossrefValidationPath,
+    figuresJsonPath,
     bibtex,
     citationCount: validatedCitations.length,
     crossrefValidatedCount: validatedCitations.filter(
       (citation) => citation.crossref?.status === "validated",
     ).length,
+    figureCount: figures.length,
   };
 }
 
@@ -173,6 +189,71 @@ export function extractCitations(
   }
 
   return assignCitationKeys(unique);
+}
+
+export function extractFigures(article: Record<string, unknown>): FigureRecord[] {
+  const output = article.output as Record<string, unknown> | undefined;
+  const structuredArticle = output?.structured_article as Record<string, unknown> | undefined;
+
+  // Collect from citation metadata
+  const citationFigures = collectStructuredFigures(structuredArticle);
+
+  // Collect from REACTCOMPONENT blocks in output.text
+  const textFigures =
+    typeof output?.text === "string" ? extractFiguresFromText(output.text) : [];
+
+  // Deduplicate by (name, url)
+  const seen = new Set<string>();
+  const result: FigureRecord[] = [];
+  for (const fig of [...citationFigures, ...textFigures]) {
+    const key = `${fig.name}\0${fig.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(fig);
+  }
+  return result;
+}
+
+function collectStructuredFigures(root: unknown): FigureRecord[] {
+  const figures: FigureRecord[] = [];
+
+  function walk(value: unknown): void {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+
+    const node = value as { citations?: unknown };
+    if (Array.isArray(node.citations)) {
+      for (const cit of node.citations as CitationInput[]) {
+        for (const fig of cit.metadata?.content_metadata?.figures ?? []) {
+          if (typeof fig.url === "string" && fig.url.length > 0) {
+            figures.push({
+              name: typeof fig.name === "string" ? fig.name : "",
+              url: fig.url,
+              ...(typeof fig.caption === "string" && fig.caption.length > 0
+                ? { caption: fig.caption }
+                : {}),
+            });
+          }
+        }
+      }
+    }
+
+    for (const child of Object.values(value)) walk(child);
+  }
+
+  walk(root);
+
+  // Deduplicate
+  const seen = new Set<string>();
+  return figures.filter((fig) => {
+    const key = `${fig.name}\0${fig.url}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function validateCitationsWithCrossref(
@@ -236,6 +317,15 @@ function normalizeStructuredCitation(input: CitationInput): CitationRecord | nul
     return null;
   }
 
+  const rawFigures = input.metadata?.content_metadata?.figures ?? [];
+  const figures: FigureRecord[] = rawFigures
+    .filter((f) => typeof f.url === "string" && f.url.length > 0)
+    .map((f) => ({
+      name: typeof f.name === "string" ? f.name : "",
+      url: f.url as string,
+      ...(typeof f.caption === "string" && f.caption.length > 0 ? { caption: f.caption } : {}),
+    }));
+
   return {
     key: "",
     citation: rawCitation,
@@ -249,6 +339,7 @@ function normalizeStructuredCitation(input: CitationInput): CitationRecord | nul
     journal: stringValue(detail.journal_name),
     publicationInfo: stringValue(detail.publication_info_string),
     pageImage: stringValue(input.metadata?.content_metadata?.figures?.[0]?.url),
+    ...(figures.length > 0 ? { figures } : {}),
   };
 }
 

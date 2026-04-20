@@ -229,3 +229,58 @@ function stripReactComponentBlocks(text: string): string {
     .replace(/REACTCOMPONENT!:![A-Za-z]+!:!\{[\s\S]*?\}\n*/g, "")
     .trim();
 }
+
+interface FigurePayload {
+  url?: string;
+  name?: string;
+  caption?: string;
+}
+
+export interface FigureRecord {
+  name: string;
+  url: string;
+  caption?: string;
+}
+
+const PUBLICATION_FIGURE_RE = /REACTCOMPONENT!:!PublicationFigure!:!(\{[\s\S]*?\})\n*/g;
+
+export function extractFiguresFromText(text: string): FigureRecord[] {
+  const figures: FigureRecord[] = [];
+  for (const match of text.matchAll(PUBLICATION_FIGURE_RE)) {
+    try {
+      const payload = JSON.parse(match[1]) as FigurePayload;
+      if (typeof payload.url === "string" && payload.url.length > 0) {
+        figures.push({
+          name: typeof payload.name === "string" ? payload.name : "",
+          url: payload.url,
+          ...(typeof payload.caption === "string" && payload.caption.length > 0
+            ? { caption: payload.caption }
+            : {}),
+        });
+      }
+    } catch {
+      // skip malformed JSON
+    }
+  }
+  return figures;
+}
+
+const VISUAL_TAG_RE = /<visual>([^[<]+?)(?:\[\d+\])?<\/visual>/g;
+
+export function resolveVisualTags(text: string, figures: FigureRecord[]): string {
+  if (figures.length === 0) return text;
+
+  const lookup = new Map<string, FigureRecord>();
+  for (const fig of figures) {
+    if (fig.name && !lookup.has(fig.name)) {
+      lookup.set(fig.name, fig);
+    }
+  }
+
+  return text.replace(VISUAL_TAG_RE, (original, name: string) => {
+    const fig = lookup.get(name);
+    if (!fig) return original;
+    const alt = fig.caption ? `${fig.name}: ${fig.caption}` : fig.name;
+    return `![${alt}](${fig.url})`;
+  });
+}

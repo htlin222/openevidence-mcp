@@ -7,12 +7,17 @@ import path from "node:path";
 import {
   citationsToBibTeX,
   extractCitations,
+  extractFigures,
   saveArticleArtifacts,
   validateCitationsWithCrossref,
   type CrossrefLookup,
 } from "../src/citations.js";
 import type { AppConfig } from "../src/config.js";
-import { extractAnswerText } from "../src/openevidence-client.js";
+import {
+  extractAnswerText,
+  extractFiguresFromText,
+  resolveVisualTags,
+} from "../src/openevidence-client.js";
 
 const mockLookup: CrossrefLookup = {
   async byDoi(doi) {
@@ -109,18 +114,77 @@ test("saves article, answer, citations, BibTeX, and validation artifacts", async
       JSON.parse(await readFile(artifacts.crossrefValidationPath, "utf8"))[0].crossref.status,
       "not_found",
     );
+
+    // figures.json should exist with extracted figures
+    assert.equal(artifacts.figureCount, 2);
+    const figuresJson = JSON.parse(await readFile(artifacts.figuresJsonPath, "utf8"));
+    assert.equal(figuresJson.length, 2);
+    assert.equal(figuresJson[0].name, "FOLL-A");
+    assert.equal(figuresJson[1].name, "Figure 1");
+
+    // answer.md should have resolved <visual> tags
+    const answerMd = await readFile(artifacts.answerPath, "utf8");
+    assert.match(answerMd, /!\[FOLL-A: Follicular Lymphoma Algorithm/);
+    assert.doesNotMatch(answerMd, /<visual>FOLL-A/);
   } finally {
     await rm(artifactRoot, { recursive: true, force: true });
   }
+});
+
+test("extractFiguresFromText parses PublicationFigure REACTCOMPONENT blocks", () => {
+  const text = [
+    "Some text before",
+    'REACTCOMPONENT!:!PublicationFigure!:!{"url":"https://example.com/fig1.jpg","name":"FIG-1","caption":"First figure"}',
+    "Middle text",
+    'REACTCOMPONENT!:!Thinking!:!{"content":"ignore me"}',
+    'REACTCOMPONENT!:!PublicationFigure!:!{"url":"https://example.com/fig2.jpg","name":"FIG-2"}',
+    "",
+  ].join("\n");
+
+  const figures = extractFiguresFromText(text);
+  assert.equal(figures.length, 2);
+  assert.equal(figures[0].name, "FIG-1");
+  assert.equal(figures[0].url, "https://example.com/fig1.jpg");
+  assert.equal(figures[0].caption, "First figure");
+  assert.equal(figures[1].name, "FIG-2");
+  assert.equal(figures[1].caption, undefined);
+});
+
+test("resolveVisualTags replaces tags with markdown images", () => {
+  const text = "See <visual>CERV-7[34]</visual> and <visual>Unknown[99]</visual> for details.";
+  const figures = [
+    { name: "CERV-7", url: "https://example.com/cerv7.jpg", caption: "Cervical Algorithm" },
+  ];
+
+  const resolved = resolveVisualTags(text, figures);
+  assert.match(resolved, /!\[CERV-7: Cervical Algorithm\]\(https:\/\/example\.com\/cerv7\.jpg\)/);
+  assert.match(resolved, /<visual>Unknown\[99\]<\/visual>/); // unresolved tag stays
+});
+
+test("extractFigures collects from both citation metadata and REACTCOMPONENT blocks", () => {
+  const figures = extractFigures(makeArticle());
+  assert.equal(figures.length, 2);
+  assert.equal(figures[0].name, "FOLL-A");
+  assert.equal(figures[0].url, "https://storage.googleapis.com/nccn_images/b-cell/page_5.jpg");
+  assert.equal(figures[1].name, "Figure 1");
+  assert.equal(figures[1].url, "https://example.com/figure1.jpg");
 });
 
 function makeArticle(): Record<string, unknown> {
   return {
     id: "test-article",
     output: {
+      text: [
+        'REACTCOMPONENT!:!Thinking!:!{"content":"planning"}',
+        "",
+        "",
+        "",
+        "Some answer text.",
+        'REACTCOMPONENT!:!PublicationFigure!:!{"url":"https://example.com/figure1.jpg","name":"Figure 1","caption":"Overall Survival"}',
+      ].join("\n"),
       structured_article: {
         raw_text:
-          "Per the **NCCN B-Cell Lymphomas Guidelines (v3.2026)**, R-CHOP and Pola-R-CHP are preferred.[15][40]\n\nThe POLARIX trial supports Pola-R-CHP.[40]",
+          "Per the **NCCN B-Cell Lymphomas Guidelines (v3.2026)**, see <visual>FOLL-A[15]</visual> for the algorithm. R-CHOP and Pola-R-CHP are preferred.[15][40]\n\nThe POLARIX trial supports Pola-R-CHP.[40]",
         articlesection_set: [
           {
             articleparagraph_set: [
@@ -139,6 +203,15 @@ function makeArticle(): Record<string, unknown> {
                             dt_published: "2026-03-12",
                             authors_string: "National Comprehensive Cancer Network",
                             publication_info_string: "Updated 2026-03-12",
+                          },
+                          content_metadata: {
+                            figures: [
+                              {
+                                url: "https://storage.googleapis.com/nccn_images/b-cell/page_5.jpg",
+                                name: "FOLL-A",
+                                caption: "Follicular Lymphoma Algorithm",
+                              },
+                            ],
                           },
                         },
                       },
