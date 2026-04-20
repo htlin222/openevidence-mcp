@@ -149,6 +149,8 @@ export async function saveArticleArtifacts(
       2,
     )}\n`,
   );
+  const figuresDir = path.join(artifactDir, "figures");
+  await downloadFigures(figures, figuresDir);
   await writeFile(figuresJsonPath, `${JSON.stringify(figures, null, 2)}\n`);
 
   return {
@@ -254,6 +256,50 @@ function collectStructuredFigures(root: unknown): FigureRecord[] {
     seen.add(key);
     return true;
   });
+}
+
+async function downloadFigures(
+  figures: FigureRecord[],
+  figuresDir: string,
+): Promise<void> {
+  if (figures.length === 0) return;
+  await mkdir(figuresDir, { recursive: true });
+
+  const used = new Map<string, number>();
+  await Promise.all(
+    figures.map(async (fig) => {
+      try {
+        const ext = extFromUrl(fig.url);
+        const base = sanitizePathSegment(fig.name || "figure");
+        const count = used.get(base) ?? 0;
+        used.set(base, count + 1);
+        const filename = count === 0 ? `${base}${ext}` : `${base}_${count + 1}${ext}`;
+        const dest = path.join(figuresDir, filename);
+
+        const res = await fetch(fig.url);
+        if (!res.ok || !res.body) return;
+        const buffer = Buffer.from(await res.arrayBuffer());
+        await writeFile(dest, buffer);
+        fig.localPath = dest;
+      } catch {
+        // skip failed downloads silently
+      }
+    }),
+  );
+}
+
+function extFromUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const dot = pathname.lastIndexOf(".");
+    if (dot !== -1) {
+      const ext = pathname.slice(dot).toLowerCase().split(/[?#]/)[0];
+      if (/^\.[a-z0-9]{2,5}$/.test(ext)) return ext;
+    }
+  } catch {
+    // ignore
+  }
+  return ".jpg";
 }
 
 export async function validateCitationsWithCrossref(

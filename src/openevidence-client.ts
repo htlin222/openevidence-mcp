@@ -240,6 +240,7 @@ export interface FigureRecord {
   name: string;
   url: string;
   caption?: string;
+  localPath?: string;
 }
 
 const PUBLICATION_FIGURE_RE = /REACTCOMPONENT!:!PublicationFigure!:!(\{[\s\S]*?\})\n*/g;
