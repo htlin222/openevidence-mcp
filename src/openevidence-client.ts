@@ -9,6 +9,7 @@ import {
   parseRetryAfterMs,
   withExponentialBackoff,
   type ClinicalPriority,
+  type HeaderLike,
   type RateLimitConfig,
   type RateLimitMetrics,
 } from "./rate-limit.js";
@@ -197,6 +198,16 @@ export class OpenEvidenceClient {
         try {
           const res = await this.fetchWithCookies(url, init ?? {});
           this.limiter.observe({ status: res.status, headers: res.headers });
+          // DataDome bot-protection serves a 403 interstitial when it flags the
+          // request as automated. This is non-retryable: hammering it only makes
+          // things worse, and there is no client-side bypass. Surface a clear,
+          // actionable error pointing at the browser re-auth / cookie refresh.
+          if (res.status === 403) {
+            const snippet = await safeReadSnippet(res);
+            if (isDataDomeChallenge(res, snippet)) {
+              throw new DataDomeChallengeError(`${init?.method ?? "GET"} ${url}`, res.headers);
+            }
+          }
           if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
             const retryAfterMs =
               parseRetryAfterMs(res.headers.get("retry-after"), Date.now()) ?? undefined;
@@ -243,6 +254,40 @@ export class OpenEvidenceClient {
       headers,
     });
   }
+}
+
+/**
+ * Raised when OpenEvidence's DataDome anti-bot layer returns a challenge
+ * interstitial (HTTP 403) instead of the requested resource.
+ *
+ * This is NOT an auth failure — the login session is unaffected. It means the
+ * bot-protection scored this request as automated traffic. There is no
+ * supported client-side bypass; the resolution is for a human to solve the
+ * challenge in a real browser and refresh the exported cookie jar.
+ */
+export class DataDomeChallengeError extends HttpError {
+  constructor(target: string, headers?: HeaderLike) {
+    super(
+      [
+        `DataDome bot-protection challenge on ${target} (HTTP 403).`,
+        `Your OpenEvidence login session is still valid — the anti-bot layer flagged`,
+        `this request as automated. Re-authenticate in a real browser, solve the`,
+        `challenge, then refresh cookies.json. Automated bypass is not supported.`,
+      ].join(" "),
+      403,
+      undefined,
+      headers,
+    );
+    this.name = "DataDomeChallengeError";
+  }
+}
+
+/** Heuristically detect a DataDome challenge from a 403 response. */
+export function isDataDomeChallenge(res: Pick<Response, "headers">, bodySnippet: string): boolean {
+  const h = res.headers;
+  if (h.has("x-datadome") || h.has("x-dd-b")) return true;
+  if (/datadome/i.test(h.get("set-cookie") ?? "")) return true;
+  return /captcha-delivery\.com|datadome|"interstitial"/i.test(bodySnippet);
 }
 
 async function assertSuccessResponse(res: Response, method: string, url: string): Promise<void> {
