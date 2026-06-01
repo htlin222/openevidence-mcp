@@ -1,69 +1,71 @@
 {
-  "name": "openevidence-mcp",
-  "version": "0.2.0",
-  "description": "Open-source MCP server for OpenEvidence clinical platform. Cookie-file auth, no API key required.",
-  "main": "dist/server.js",
-  "bin": {
-    "openevidence-mcp": "./dist/server.js"
-  },
-  "directories": {
-    "example": "examples"
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/server.ts",
-    "start": "node dist/server.js",
-    "login": "tsx src/login.ts",
-    "import-cookies": "tsx src/login.ts",
-    "fingerprint": "tsx src/fingerprint.ts",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "smoke": "tsx src/smoke.ts"
-  },
-  "files": [
-    "dist/",
-    "scripts/",
-    "examples/",
-    ".env.example",
-    "LICENSE",
-    "NOTICE",
-    "README.md",
-    "README.AI.md"
-  ],
-  "engines": {
-    "node": ">=20"
-  },
-  "keywords": [
-    "mcp",
-    "mcp-server",
-    "openevidence",
-    "medical-ai",
-    "clinical-decision-support",
-    "evidence-based-medicine",
-    "healthcare",
-    "cookies",
-    "codex",
-    "claude"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/htlin222/openevidence-mcp.git"
-  },
-  "homepage": "https://github.com/htlin222/openevidence-mcp",
-  "bugs": {
-    "url": "https://github.com/htlin222/openevidence-mcp/issues"
-  },
-  "author": "Bakhtier Sizhaev",
-  "license": "Apache-2.0",
-  "type": "module",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "dotenv": "^17.3.1",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "@types/node": "^25.3.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
-  }
+	"name": "openevidence-mcp",
+	"version": "0.2.0",
+	"description": "Open-source MCP server for OpenEvidence clinical platform. Cookie-file auth, no API key required.",
+	"main": "dist/server.js",
+	"bin": {
+		"openevidence-mcp": "./dist/server.js"
+	},
+	"directories": {
+		"example": "examples"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"dev": "tsx src/server.ts",
+		"start": "node dist/server.js",
+		"login": "tsx src/login.ts",
+		"import-cookies": "tsx src/login.ts",
+		"fingerprint": "tsx src/fingerprint.ts",
+		"check": "tsc -p tsconfig.json --noEmit",
+		"test": "tsx --test test/*.test.ts",
+		"smoke": "tsx src/smoke.ts",
+		"pw-ask": "tsx src/playwright-ask.ts"
+	},
+	"files": [
+		"dist/",
+		"scripts/",
+		"examples/",
+		".env.example",
+		"LICENSE",
+		"NOTICE",
+		"README.md",
+		"README.AI.md"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"keywords": [
+		"mcp",
+		"mcp-server",
+		"openevidence",
+		"medical-ai",
+		"clinical-decision-support",
+		"evidence-based-medicine",
+		"healthcare",
+		"cookies",
+		"codex",
+		"claude"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/htlin222/openevidence-mcp.git"
+	},
+	"homepage": "https://github.com/htlin222/openevidence-mcp",
+	"bugs": {
+		"url": "https://github.com/htlin222/openevidence-mcp/issues"
+	},
+	"author": "Bakhtier Sizhaev",
+	"license": "Apache-2.0",
+	"type": "module",
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.26.0",
+		"dotenv": "^17.3.1",
+		"playwright-core": "^1.60.0",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@types/node": "^25.3.0",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
 }

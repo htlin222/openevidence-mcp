@@ -12,7 +12,8 @@
   <a href="https://www.typescriptlang.org"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9.3-3178c6"></a>
   <img alt="Node" src="https://img.shields.io/badge/Node-%3E%3D20-339933?logo=node.js&logoColor=white">
   <img alt="Auth" src="https://img.shields.io/badge/auth-cookies.json-4f46e5">
-  <img alt="No Playwright" src="https://img.shields.io/badge/no-Playwright-ef4444">
+  <img alt="Reads" src="https://img.shields.io/badge/reads-Node%20fetch-339933">
+  <img alt="Ask" src="https://img.shields.io/badge/ask-CDP%20browser%20bridge-ef4444">
   <img alt="Unofficial" src="https://img.shields.io/badge/OpenEvidence-unofficial-yellow">
   <img alt="BibTeX" src="https://img.shields.io/badge/citations-BibTeX-0f766e">
   <img alt="Crossref" src="https://img.shields.io/badge/validation-Crossref-f97316">
@@ -23,29 +24,33 @@
 
 ## What It Does
 
-This is an unofficial OpenEvidence MCP server that reuses cookies exported from your own logged-in OpenEvidence browser session. It does not launch a browser, does not install Playwright, and does not need an official OpenEvidence API key.
+This is an unofficial OpenEvidence MCP server that reuses cookies exported from your own logged-in OpenEvidence browser session. It does not need an official OpenEvidence API key, and it never downloads or bundles a browser engine.
 
-It is designed for local personal workflows where you already have lawful access to OpenEvidence. It does not bypass authentication, remove access controls, redistribute OpenEvidence content, or include OpenEvidence data in this repository.
+**How it talks to OpenEvidence — and why.** Read endpoints (auth, history, article fetch, collections) run over plain Node `fetch` with your cookie file — no browser involved. The one exception is the **ask submission** (`POST /api/article`): OpenEvidence guards it with DataDome's anti-bot layer, which scores the request's TLS/JA3 + HTTP-2 fingerprint — signals a Node HTTP client cannot reproduce — and returns HTTP 403 even with a valid session and a fresh `datadome` cookie. We confirmed this exhaustively: refreshing cookies, regenerating the header fingerprint, and restarting the process all still 403 on the POST while GET endpoints keep working.
+
+The only reliable fix is to issue that single POST from a **real browser**. So `oe_ask` tries Node first and, on a DataDome challenge, falls back to issuing the POST inside a browser **you** launch, attached over the Chrome DevTools Protocol (CDP); the answer is then polled over normal Node requests. `playwright-core` attaches to your existing browser — it does **not** download Chromium, and a headless browser would itself be flagged, so this uses your real, headed session. See [DataDome And The Browser-Backed Ask](#datadome-and-the-browser-backed-ask) for setup. If you only use the read tools, no browser is ever launched.
+
+It is designed for local personal workflows where you already have lawful access to OpenEvidence. It does not bypass authentication, remove access controls, redistribute OpenEvidence content, or include OpenEvidence data in this repository. The browser bridge does not defeat DataDome programmatically — it routes the request through a genuine browser session you control.
 
 Tools:
 
-| Tool | Purpose |
-| --- | --- |
-| `oe_auth_status` | Check `/api/auth/me` with your cookie file |
-| `oe_history_list` | Read OpenEvidence history |
-| `oe_article_get` | Fetch an article by id and save artifacts |
-| `oe_ask` | Ask a question, optionally wait, and save artifacts |
-| `oe_collections_list` | List your collections |
-| `oe_collections_get` | Get a collection (incl. nested questions[] = membership list) |
-| `oe_collections_create` | Create a collection (agent-managed names should start with `#`) |
-| `oe_collections_add_article` | Add a chat to a collection |
-| `oe_collections_db_init` | Create the local SQLite mirror (idempotent) |
-| `oe_collections_sync_history` | Pull /api/article/list into local SQLite chats table |
-| `oe_collections_sync_db` | Refresh collections + memberships into SQLite |
-| `oe_collections_unsorted` | Chats with no `#`-collection membership; structured JSON |
-| `oe_collections_summary` | Counts + last sync timestamps |
-| `oe_collections_classify` | Auto-classify unsorted chats using log-odds-ratio signatures learned from your existing memberships + curated keyword rules |
-| `oe_collections_bulk_apply` | Mint missing `#`-collections + add memberships per `[{article_id, hashtags}]` plan |
+| Tool                          | Purpose                                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `oe_auth_status`              | Check `/api/auth/me` with your cookie file                                                                                  |
+| `oe_history_list`             | Read OpenEvidence history                                                                                                   |
+| `oe_article_get`              | Fetch an article by id and save artifacts                                                                                   |
+| `oe_ask`                      | Ask a question, optionally wait, and save artifacts                                                                         |
+| `oe_collections_list`         | List your collections                                                                                                       |
+| `oe_collections_get`          | Get a collection (incl. nested questions[] = membership list)                                                               |
+| `oe_collections_create`       | Create a collection (agent-managed names should start with `#`)                                                             |
+| `oe_collections_add_article`  | Add a chat to a collection                                                                                                  |
+| `oe_collections_db_init`      | Create the local SQLite mirror (idempotent)                                                                                 |
+| `oe_collections_sync_history` | Pull /api/article/list into local SQLite chats table                                                                        |
+| `oe_collections_sync_db`      | Refresh collections + memberships into SQLite                                                                               |
+| `oe_collections_unsorted`     | Chats with no `#`-collection membership; structured JSON                                                                    |
+| `oe_collections_summary`      | Counts + last sync timestamps                                                                                               |
+| `oe_collections_classify`     | Auto-classify unsorted chats using log-odds-ratio signatures learned from your existing memberships + curated keyword rules |
+| `oe_collections_bulk_apply`   | Mint missing `#`-collections + add memberships per `[{article_id, hashtags}]` plan                                          |
 
 `oe_ask` and `oe_article_get` return BibTeX in the MCP response by default when artifacts are saved. Pass `include_bibtex: false` to keep the response smaller while still writing `citations.bib` to disk.
 
@@ -78,31 +83,31 @@ The wrapper (`scripts/collection_sync_cron.sh`) appends one block per run to `~/
 
 The wrapper takes an optional mode flag:
 
-| Mode | Behavior |
-| --- | --- |
-| (default) | sync only — chats accumulate as `unsorted` until you run the routine |
-| `--dry-run` | sync + classify; writes `proposed-plan.json` for review, no apply |
-| `--auto` | sync + classify + bulk-apply + reconcile; fully autonomous sort |
+| Mode        | Behavior                                                             |
+| ----------- | -------------------------------------------------------------------- |
+| (default)   | sync only — chats accumulate as `unsorted` until you run the routine |
+| `--dry-run` | sync + classify; writes `proposed-plan.json` for review, no apply    |
+| `--auto`    | sync + classify + bulk-apply + reconcile; fully autonomous sort      |
 
 `scripts/classify.py` runs offline, no API. It builds a per-tag log-odds-ratio signature (Monroe et al. 2008) from your existing memberships every run, OR'd with curated keyword rules. Validate quality on your data with `python scripts/classify.py validate` (held-out cross-validation; on the first 603 memberships I verified, hit-rate = 99.4% with recall ≈1.0; precision varies by tag — raise `--threshold` for tighter precision in `--auto` mode). Tune for headless use via `OE_MCP_AUTO_THRESHOLD` (default 12) and `OE_MCP_AUTO_TOP_K` (default 3). Switch the launchd job to autonomous mode with `OE_MCP_SYNC_MODE=--auto bash scripts/install_launchd.sh`.
 
 Saved artifacts:
 
-| File | Purpose |
-| --- | --- |
-| `article.json` | Full OpenEvidence article payload |
-| `answer.md` | Extracted markdown answer |
-| `citations.json` | Parsed structured citations |
-| `citations.bib` | BibTeX bibliography |
+| File                       | Purpose                              |
+| -------------------------- | ------------------------------------ |
+| `article.json`             | Full OpenEvidence article payload    |
+| `answer.md`                | Extracted markdown answer            |
+| `citations.json`           | Parsed structured citations          |
+| `citations.bib`            | BibTeX bibliography                  |
 | `crossref-validation.json` | Post-hoc Crossref validation results |
 
 ## Fast Install
 
 You need two private browser exports from the same logged-in OpenEvidence browser session:
 
-| File | Purpose | Where to put it |
-| --- | --- | --- |
-| `cookies.json` | Authenticates your OpenEvidence account session | `./cookies.json` |
+| File                       | Purpose                                                | Where to put it                        |
+| -------------------------- | ------------------------------------------------------ | -------------------------------------- |
+| `cookies.json`             | Authenticates your OpenEvidence account session        | `./cookies.json`                       |
 | `www.openevidence.com.har` | Teaches the client the browser fingerprint that worked | Any private path; pass it as `HAR=...` |
 
 Both files are credentials. Keep them local, do not commit them, and do not share them. The HAR extractor only saves the browser signature headers into `openevidence-fingerprint.json`; it does not copy cookies or authorization headers from the HAR.
@@ -304,6 +309,41 @@ That maps to `oe_article_get`:
 
 If the response is too large, use `include_bibtex: false`; the server will still write `citations.bib` to disk.
 
+### DataDome And The Browser-Backed Ask
+
+OpenEvidence protects the ask submission (`POST /api/article`) with DataDome's
+anti-bot layer. It scores the request's **TLS/JA3 + HTTP-2 fingerprint** — signals
+Node's `fetch` cannot reproduce — so the POST returns **HTTP 403** even with a
+valid login session and a fresh `datadome` cookie. (Read endpoints like history
+and article fetch are scored leniently and keep working from Node.)
+
+To make `oe_ask` work end-to-end, the server issues that one POST from inside a
+**real browser** attached over the Chrome DevTools Protocol (CDP), then polls for
+completion over normal Node requests. `ask()` tries Node first and falls back to
+the browser automatically on a DataDome challenge.
+
+**Setup (once per machine):** run a browser with CDP enabled, on a profile that
+is logged into OpenEvidence:
+
+```bash
+make brave-cdp                 # open -a "Brave Browser" --args --remote-debugging-port=9222
+# or any Chromium browser:
+#   open -a "Google Chrome" --args --remote-debugging-port=9222
+```
+
+Leave it running (normal browsing is fine). Then `oe_ask` works as usual. You can
+also run a one-off ask without an MCP client:
+
+```bash
+make pw-ask QUESTION="first-line treatment for community-acquired pneumonia"
+# or: npm run pw-ask -- --question "..." [--json]
+```
+
+If even the in-browser POST returns 403, the OpenEvidence session in that browser
+profile is stale — log in and ask one question manually in that window, then retry.
+The non-working pure-Node approach (and the full investigation) is preserved in
+[archive/](archive/README.md).
+
 ## Citation Artifacts
 
 Completed `oe_ask` and `oe_article_get` calls save artifacts under:
@@ -354,36 +394,42 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 
 ## Make Targets
 
-| Target | Purpose |
-| --- | --- |
-| `make deps` | Run `npm install` |
-| `make build HAR=/path/to/file.har` | Extract fingerprint if the HAR exists, then compile TypeScript |
-| `make check` | Type-check |
-| `make test` | Run unit tests |
-| `make smoke` | Validate auth and history access |
-| `make fingerprint HAR=/path/to/file.har` | Extract the working browser fingerprint from a HAR |
-| `make import-cookies COOKIES=/path/to/cookies.json` | Import and verify cookies |
-| `make install-claude-global HAR=/path/to/file.har` | Build, then register with Claude Code user config |
-| `make install-codex-global HAR=/path/to/file.har` | Build, then register with Codex CLI |
-| `make install-agy-global HAR=/path/to/file.har` | Build, then register with Antigravity CLI user config |
-| `make install-all HAR=/path/to/file.har` | Build, then register with Claude Code, Codex CLI, and Antigravity CLI |
+| Target                                              | Purpose                                                                           |
+| --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `make deps`                                         | Run `npm install`                                                                 |
+| `make build HAR=/path/to/file.har`                  | Extract fingerprint if the HAR exists, then compile TypeScript                    |
+| `make check`                                        | Type-check                                                                        |
+| `make test`                                         | Run unit tests                                                                    |
+| `make smoke`                                        | Validate auth and history access                                                  |
+| `make fingerprint HAR=/path/to/file.har`            | Extract the working browser fingerprint from a HAR                                |
+| `make brave-cdp`                                    | Launch Brave with CDP (`--remote-debugging-port=9222`) for the browser-backed ask |
+| `make pw-ask QUESTION="..."`                        | Run a one-off browser-backed ask via CDP                                          |
+| `make import-cookies COOKIES=/path/to/cookies.json` | Import and verify cookies                                                         |
+| `make install-claude-global HAR=/path/to/file.har`  | Build, then register with Claude Code user config                                 |
+| `make install-codex-global HAR=/path/to/file.har`   | Build, then register with Codex CLI                                               |
+| `make install-agy-global HAR=/path/to/file.har`     | Build, then register with Antigravity CLI user config                             |
+| `make install-all HAR=/path/to/file.har`            | Build, then register with Claude Code, Codex CLI, and Antigravity CLI             |
 
 ## Environment Variables
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OE_MCP_BASE_URL` | `https://www.openevidence.com` | OpenEvidence base URL |
-| `OE_MCP_ROOT_DIR` | `~/.openevidence-mcp` | Root for default auth paths |
-| `OE_MCP_COOKIES_PATH` | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file |
-| `OE_MCP_AUTH_STATE_PATH` | unset | Legacy alias for `OE_MCP_COOKIES_PATH` |
-| `OE_MCP_FINGERPRINT_PATH` | `./openevidence-fingerprint.json` if present | Browser signature header fingerprint |
-| `OE_MCP_ARTIFACT_DIR` | OS temp dir + `openevidence-mcp` | Artifact output directory |
-| `OE_MCP_CROSSREF_MAILTO` | unset | Optional Crossref polite-pool email |
-| `OE_MCP_CROSSREF_VALIDATE` | `1` | Set `0` to skip Crossref validation |
-| `OE_MCP_POLL_INTERVAL_MS` | `1200` | Poll interval for `oe_ask` |
-| `OE_MCP_POLL_TIMEOUT_MS` | `180000` | Default poll timeout |
-| `OE_MCP_DB_PATH` | `~/.openevidence-mcp/db/oe.sqlite` | Local SQLite mirror used by the collections tools |
-| `OE_MCP_PYTHON` | `python3` | Python interpreter the bridge tools spawn |
+| Variable                   | Default                                                                   | Purpose                                                               |
+| -------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `OE_MCP_BASE_URL`          | `https://www.openevidence.com`                                            | OpenEvidence base URL                                                 |
+| `OE_MCP_ROOT_DIR`          | `~/.openevidence-mcp`                                                     | Root for default auth paths                                           |
+| `OE_MCP_COOKIES_PATH`      | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file                                                           |
+| `OE_MCP_AUTH_STATE_PATH`   | unset                                                                     | Legacy alias for `OE_MCP_COOKIES_PATH`                                |
+| `OE_MCP_FINGERPRINT_PATH`  | `./openevidence-fingerprint.json` if present                              | Browser signature header fingerprint                                  |
+| `OE_MCP_ARTIFACT_DIR`      | OS temp dir + `openevidence-mcp`                                          | Artifact output directory                                             |
+| `OE_MCP_CROSSREF_MAILTO`   | unset                                                                     | Optional Crossref polite-pool email                                   |
+| `OE_MCP_CROSSREF_VALIDATE` | `1`                                                                       | Set `0` to skip Crossref validation                                   |
+| `OE_MCP_POLL_INTERVAL_MS`  | `1200`                                                                    | Poll interval for `oe_ask`                                            |
+| `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                                                  |
+| `OE_MCP_CDP_URL`           | `http://localhost:9222`                                                   | CDP endpoint of the browser used for the DataDome-passing ask         |
+| `OE_MCP_WEB_ORIGIN`        | same as `OE_MCP_BASE_URL`                                                 | Web origin the browser ask path drives                                |
+| `OE_MCP_BROWSER_FALLBACK`  | `1`                                                                       | Set `0` to disable the browser fallback (POST then fails on DataDome) |
+| `OE_MCP_ASK_VIA_BROWSER`   | `0`                                                                       | Set `1` to skip the Node POST attempt and go straight to the browser  |
+| `OE_MCP_DB_PATH`           | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite mirror used by the collections tools                     |
+| `OE_MCP_PYTHON`            | `python3`                                                                 | Python interpreter the bridge tools spawn                             |
 
 ## Project Files
 
@@ -393,6 +439,9 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 - [src/citations.ts](src/citations.ts) - citation extraction, BibTeX, Crossref validation
 - [src/cookies.ts](src/cookies.ts) - cookie file parsing
 - [src/server.ts](src/server.ts) - MCP tools
+- [src/browser-ask.ts](src/browser-ask.ts) - DataDome-passing ask over CDP (`submitAskViaBrowser`)
+- [src/playwright-ask.ts](src/playwright-ask.ts) - standalone `pw-ask` CLI for the browser-backed ask
+- [archive/](archive/README.md) - superseded pure-Node ask path + DataDome investigation
 - [test/citations.test.ts](test/citations.test.ts) - unit tests
 
 ## License And Attribution

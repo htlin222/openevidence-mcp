@@ -15,8 +15,11 @@ else
 FINGERPRINT_HAR ?= $(CURDIR)/www.openevidence.com.har
 endif
 SERVER := $(CURDIR)/dist/server.js
+CDP_PORT ?= 9222
+BRAVE ?= Brave Browser
+QUESTION ?=
 
-.PHONY: deps build check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
+.PHONY: deps build check test smoke fingerprint brave-cdp pw-ask import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
 
 deps:
 	$(NPM) install
@@ -40,6 +43,15 @@ smoke:
 
 fingerprint:
 	$(NPM) run fingerprint -- --har "$(FINGERPRINT_HAR)" --out "$(FINGERPRINT)"
+
+# Launch a CDP-enabled browser (logged into OpenEvidence) for the DataDome-passing
+# ask path. POST /api/article is bot-gated and only succeeds from a real browser.
+brave-cdp:
+	open -a "$(BRAVE)" --args --remote-debugging-port=$(CDP_PORT)
+
+# Run a one-off browser-backed ask: make pw-ask QUESTION="..."
+pw-ask:
+	$(NPM) run pw-ask -- --question "$(QUESTION)" --cdp "http://localhost:$(CDP_PORT)"
 
 import-cookies:
 	OE_MCP_COOKIES_PATH="$(COOKIES)" $(NPM) run import-cookies -- --import "$(COOKIES)"
