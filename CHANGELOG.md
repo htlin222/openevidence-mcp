@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-23
+
+### Changed
+- **Maintenance release — publishes the accumulated 0.4.x work to npm.** No
+  functional changes over 0.4.3; the npm registry had lagged at 0.2.1, so this
+  bump ships the current server (including `oe_article_set_access`, the
+  byte-for-byte `oe_ask` payload, and the local answer store) to the published
+  package.
+
 ## [0.4.3] - 2026-07-13
 
 ### Added

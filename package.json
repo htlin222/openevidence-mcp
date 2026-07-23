@@ -1,6 +1,6 @@
 {
 	"name": "openevidence-mcp",
-	"version": "0.4.3",
+	"version": "0.4.4",
 	"description": "Unofficial MCP server for OpenEvidence — authenticated through your own logged-in browser tab via a Chromium relay extension (no API key, no Playwright). Fire-and-forget asks, a shared relay daemon for concurrent sessions, BibTeX + Crossref citations.",
 	"main": "dist/server.js",
 	"bin": {
