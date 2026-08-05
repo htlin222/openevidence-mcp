@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fhtlin222%2Fopenevidence-mcp.svg)](https://mcptoplist.com/server/glama%2Fhtlin222%2Fopenevidence-mcp)
+
 <h1 align="center">OpenEvidence MCP</h1>
 
 <p align="center">
