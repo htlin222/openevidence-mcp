@@ -51,6 +51,8 @@ const ALLOWED_RELAY_ROUTES: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "GET", path: new RegExp(`^/api/collections/collections/${UUID}$`, "i") },
   { method: "GET", path: new RegExp(`^/ask/${UUID}$`, "i") },
   { method: "POST", path: /^\/api\/article$/ },
+  // Share-visibility toggle used by oe_article_set_access.
+  { method: "PATCH", path: new RegExp(`^/api/article/${UUID}/access$`, "i") },
   { method: "POST", path: /^\/api\/collections\/collections$/ },
   {
     method: "POST",

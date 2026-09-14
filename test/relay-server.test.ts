@@ -356,6 +356,36 @@ test("relay: daemon proxy rejects methods, cross-origin paths, and unknown route
   }
 });
 
+test("relay: allows PATCH /api/article/<id>/access (share toggle) and only that PATCH", async () => {
+  const relay = await startRelayServer({ port: 0 });
+  const endpoint = `http://127.0.0.1:${relay.port}/relay`;
+  const id = "11111111-2222-4333-8444-555555555555";
+  const daemonPost = (body: unknown) =>
+    fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    // Allowed: passes validation and reaches the (absent) extension → 504, not 400.
+    const ok = await daemonPost({
+      method: "PATCH",
+      path: `/api/article/${id}/access`,
+      body: JSON.stringify({ access_level: "ANYONE_WITH_LINK", shared_with_emails: [] }),
+      timeoutMs: 50,
+    });
+    assert.equal(ok.status, 504);
+    // PATCH on any other article path stays blocked.
+    for (const path of [`/api/article/${id}`, "/api/article", `/api/article/${id}/access/extra`]) {
+      const res = await daemonPost({ method: "PATCH", path, body: "{}", timeoutMs: 50 });
+      assert.equal(res.status, 400, path);
+      assert.match((await res.json()).error, /not allowed/);
+    }
+  } finally {
+    relay.close();
+  }
+});
+
 test("relay: route matching is exact, not prefix-based", async () => {
   const relay = await startRelayServer({ port: 0 });
   try {
