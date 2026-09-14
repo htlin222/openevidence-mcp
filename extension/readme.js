@@ -73,7 +73,11 @@ async function check() {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 1500);
-    res = await fetch(HEALTH, { signal: ctrl.signal });
+    const relayHeaders = await chrome.runtime.sendMessage({ type: "oe-relay-client-headers" });
+    res = await fetch(HEALTH, {
+      signal: ctrl.signal,
+      headers: relayHeaders,
+    });
     clearTimeout(t);
   } catch (e) {
     const timedOut = e && e.name === "AbortError";

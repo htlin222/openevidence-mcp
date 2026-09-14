@@ -151,8 +151,8 @@
     OpenEvidence protects its API with bot detection that blocks plain server requests. This extension
     removes that problem: when an AI tool (Claude Code, Codex, …) asks OpenEvidence a question through the
     <b>openevidence-mcp</b> server, the request is run <b>inside your own logged-in OpenEvidence tab</b> —
-    so it carries your genuine browser session and is never challenged. The extension is a generic
-    authenticated fetch proxy; all the OpenEvidence logic stays in the local MCP server.
+    so it carries your genuine browser session. The extension is a narrowly allowlisted
+    authenticated fetch bridge; all the OpenEvidence logic stays in the local MCP server.
   </p>
 
   <h2>How it works</h2>
@@ -188,8 +188,8 @@
   <h2>Privacy &amp; security</h2>
   <ul class="tidy">
     <li>The relay listens on <b>localhost only</b> (<code>127.0.0.1:__RELAY_PORT__</code>) — nothing is exposed to the network.</li>
-    <li>The extension stores <b>no credentials</b>. Your OpenEvidence session lives in your browser, as always.</li>
-    <li>It only acts on requests from your own local MCP server, and only against <code>openevidence.com</code>.</li>
+    <li>The extension stores <b>no OpenEvidence credentials</b>; only a random local relay capability. Your OpenEvidence session stays in the browser.</li>
+    <li>It only accepts the daemon's allowlisted OpenEvidence routes and is leased to one browser profile at a time.</li>
   </ul>
 
   <h2>Troubleshooting</h2>
@@ -197,7 +197,7 @@
     <li><b>Badge not green?</b> The debug panel above lists the exact failure and the fix. This page also rechecks every 3 seconds, so it turns green by itself once the cause is fixed.</li>
     <li><b>Reloading the extension:</b> <code>chrome://extensions</code> (or <code>brave://extensions</code>, <code>edge://extensions</code>) → ↻ on this extension. Needed after every rebuild.</li>
     <li><b>Changed <code>OE_MCP_RELAY_PORT</code>?</b> Rebuild this extension with the same value (<code>cd extension &amp;&amp; OE_MCP_RELAY_PORT=&lt;port&gt; npm run build</code>) and reload it — the port is baked in at build time. <code>npm run doctor</code> checks the sync.</li>
-    <li>Run the relay only in <b>one browser at a time</b> if you have it installed in several — requests go to whichever answers first.</li>
+    <li>The relay leases itself to <b>one extension installation at a time</b>; other browser profiles are rejected instead of silently sharing requests.</li>
   </ul>
 
   <footer>

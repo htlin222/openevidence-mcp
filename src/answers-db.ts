@@ -138,30 +138,27 @@ export class AnswersDb {
       );
   }
 
-  /**
-   * Cache lookup by article id alone (no account) so a hit needs zero network
-   * round-trips — article UUIDs never collide across accounts in practice.
-   */
-  getByArticleId(articleId: string): AnswerRecord | null {
+  /** Account-scoped lookup: locally cached clinical content must never cross logins. */
+  getByArticleId(account: string, articleId: string): AnswerRecord | null {
     const row = this.db
       .prepare(
         `SELECT account, article_id, title, question, answer_markdown, citations_json,
            figures_json, follow_up_json, article_type, status, datetime_created, fetched_at
-         FROM answers WHERE article_id = ? ORDER BY fetched_at DESC LIMIT 1`,
+         FROM answers WHERE account = ? AND article_id = ? LIMIT 1`,
       )
-      .get(articleId) as Record<string, string | null> | undefined;
+      .get(account, articleId) as Record<string, string | null> | undefined;
     return row ? rowToRecord(row) : null;
   }
 
-  search(query: string, limit = 10): AnswerSearchHit[] {
+  search(account: string, query: string, limit = 10): AnswerSearchHit[] {
     const sql = `SELECT a.account, a.article_id, a.title, a.question, a.datetime_created, a.fetched_at,
         snippet(answers_fts, 2, '»', '«', ' … ', 24) AS snip
       FROM answers_fts
       JOIN answers a ON a.rowid = answers_fts.rowid
-      WHERE answers_fts MATCH ?
+      WHERE answers_fts MATCH ? AND a.account = ?
       ORDER BY bm25(answers_fts) LIMIT ?`;
     const run = (match: string) =>
-      this.db.prepare(sql).all(match, limit) as Record<string, string | null>[];
+      this.db.prepare(sql).all(match, account, limit) as Record<string, string | null>[];
     let rows: Record<string, string | null>[];
     try {
       rows = run(query);
@@ -187,9 +184,18 @@ export class AnswersDb {
     }));
   }
 
-  count(): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM answers").get() as { n: number };
+  count(account?: string): number {
+    const row = (account
+      ? this.db.prepare("SELECT COUNT(*) AS n FROM answers WHERE account = ?").get(account)
+      : this.db.prepare("SELECT COUNT(*) AS n FROM answers").get()) as { n: number };
     return row.n;
+  }
+
+  accounts(): { account: string; count: number }[] {
+    const rows = this.db
+      .prepare("SELECT account, COUNT(*) AS count FROM answers GROUP BY account ORDER BY account")
+      .all() as { account: string; count: number }[];
+    return rows.map((row) => ({ account: String(row.account), count: Number(row.count) }));
   }
 
   // ---- ask pacing (per-account question-rate cooperation) ---------------------
@@ -224,6 +230,32 @@ export class AnswersDb {
     this.db
       .prepare("DELETE FROM ask_log WHERE asked_at < ?")
       .run(atMs - 24 * 60 * 60 * 1000);
+  }
+
+  /**
+   * Atomically reserve the next per-account ask slot across MCP processes.
+   * A future timestamp is intentional: later reservers queue behind it instead
+   * of all observing the same last ask and waking at once.
+   */
+  reserveAsk(account: string, nowMs: number, minIntervalMs: number): number {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const reservedAt = Math.max(nowMs, this.lastAskAt(account) + minIntervalMs);
+      this.db.prepare("INSERT INTO ask_log (account, asked_at) VALUES (?, ?)").run(account, reservedAt);
+      this.db.prepare("DELETE FROM ask_log WHERE asked_at < ?").run(nowMs - 24 * 60 * 60 * 1000);
+      this.db.exec("COMMIT");
+      return reservedAt;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Release a slot when account revalidation prevents the POST from happening. */
+  cancelAskReservation(account: string, reservedAt: number): void {
+    this.db
+      .prepare("DELETE FROM ask_log WHERE account = ? AND asked_at = ?")
+      .run(account, reservedAt);
   }
 
   close(): void {

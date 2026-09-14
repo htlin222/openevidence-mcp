@@ -1,6 +1,6 @@
 // OpenEvidence MCP Relay — MV3 service worker (TypeScript source).
 //
-// A generic authenticated fetch proxy. Long-polls the local relay (GET /poll);
+// A narrowly allowlisted authenticated fetch bridge. Long-polls the local relay (GET /poll);
 // when the MCP server hands us {method, path, body}, we run that fetch INSIDE a
 // parked OpenEvidence tab (page-context origin/cookies/TLS — DataDome passes) and
 // post the raw {status, body} back to /result. All OpenEvidence logic stays in
@@ -14,6 +14,35 @@ declare const __RELAY_PORT__: number;
 
 const RELAY_BASE = `http://127.0.0.1:${__RELAY_PORT__}`;
 const OE_BASE = "https://www.openevidence.com";
+const RELAY_CLIENT_KEY = "oeRelayClientCapabilityV2";
+let relayHeadersPromise: Promise<Record<string, string>> | null = null;
+
+function getRelayHeaders(): Promise<Record<string, string>> {
+  if (!relayHeadersPromise) {
+    const created = (async (): Promise<Record<string, string>> => {
+      const stored = await chrome.storage.local.get(RELAY_CLIENT_KEY);
+      const existing = stored[RELAY_CLIENT_KEY];
+      let capability: string;
+      if (
+        typeof existing === "string" &&
+        /^extension-v2:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          existing,
+        )
+      ) {
+        capability = existing;
+      } else {
+        capability = `extension-v2:${crypto.randomUUID()}`;
+        await chrome.storage.local.set({ [RELAY_CLIENT_KEY]: capability });
+      }
+      return { "x-openevidence-relay-client": capability };
+    })();
+    relayHeadersPromise = created;
+    void created.catch(() => {
+      relayHeadersPromise = null;
+    });
+  }
+  return relayHeadersPromise;
+}
 // Park the relay tab on the lightest possible same-origin document, NOT the
 // full SPA. `/robots.txt` is text/plain: it carries the openevidence.com origin,
 // cookies, and TLS that DataDome checks (a POST /api/article from it returns 201,
@@ -39,11 +68,13 @@ interface RelayRequest {
   method: string;
   path: string;
   body?: string;
+  deadlineAt?: number;
 }
 
 interface InTabResult {
   status: number;
   body: string;
+  headers?: Record<string, string>;
   error?: string;
 }
 
@@ -177,7 +208,13 @@ async function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<vo
 // Returns the id of a dedicated, logged-in OpenEvidence tab, creating a pinned
 // background one if needed. Tracked by tab id (not URL), so it never collides
 // with an OpenEvidence tab you opened yourself.
-async function ensureOeTab(): Promise<number> {
+async function ensureOeTab(timeoutMs = 30_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  const remaining = (): number => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("relay request deadline expired while preparing the OE tab");
+    return Math.min(30_000, ms);
+  };
   const stored = await getStoredTabId();
   if (stored != null) {
     try {
@@ -191,12 +228,12 @@ async function ensureOeTab(): Promise<number> {
         // fail. Reload it back to life before handing it out.
         if (t.discarded) {
           await chrome.tabs.reload(stored);
-          await waitForTabComplete(stored);
+          await waitForTabComplete(stored, remaining());
         }
         return stored;
       }
       await chrome.tabs.update(stored, { url: OE_PARK_URL });
-      await waitForTabComplete(stored);
+      await waitForTabComplete(stored, remaining());
       return stored;
     } catch {
       // tab was closed; adopt or create a fresh one below.
@@ -224,14 +261,14 @@ async function ensureOeTab(): Promise<number> {
     if (urlPath(orphans[0]?.url) !== OE_PARK_PATH) {
       await chrome.tabs.update(adopted, { url: OE_PARK_URL });
     }
-    await waitForTabComplete(adopted);
+    await waitForTabComplete(adopted, remaining());
     return adopted;
   }
   const created = await chrome.tabs.create({ url: OE_PARK_URL, pinned: true, active: false });
   const id = created.id;
   if (id == null) throw new Error("failed to create OE tab");
   await setStoredTabId(id);
-  await waitForTabComplete(id);
+  await waitForTabComplete(id, remaining());
   return id;
 }
 
@@ -247,20 +284,71 @@ function urlPath(url: string | undefined): string | null {
 // ---- the in-tab fetch ---------------------------------------------------------
 
 // Serialized and run INSIDE the OpenEvidence tab — keep it self-contained.
-function inTabProxy(req: RelayRequest): Promise<InTabResult> {
-  const init: RequestInit = { method: req.method, credentials: "include" };
+async function inTabProxy(req: RelayRequest): Promise<InTabResult> {
+  const deadlineAt = req.deadlineAt ?? Date.now() + 90_000;
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) {
+    return { status: 0, body: "", error: "relay request deadline expired before fetch" };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remaining);
+  const init: RequestInit = {
+    method: req.method,
+    credentials: "include",
+    signal: controller.signal,
+  };
   if (req.body != null) {
     init.body = req.body;
     init.headers = { "content-type": "application/json" };
   }
-  return fetch(req.path, init)
-    .then((r) => r.text().then((body) => ({ status: r.status, body })))
-    .catch((e) => ({ status: 0, body: "", error: String(e) }));
+  try {
+    const r = await fetch(req.path, init);
+    const reader = r.body?.getReader();
+    const decoder = new TextDecoder();
+    let body = "";
+    let bytes = 0;
+    if (reader) {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > 4_000_000) {
+          controller.abort();
+          throw new Error("upstream response exceeds 4000000 bytes");
+        }
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+      body += decoder.decode();
+    }
+    const headers: Record<string, string> = {};
+    for (const name of [
+      "content-type",
+      "retry-after",
+      "x-datadome",
+      "x-dd-b",
+      "x-ratelimit-limit",
+      "x-ratelimit-remaining",
+      "x-ratelimit-reset",
+    ]) {
+      const value = r.headers.get(name);
+      if (value !== null) headers[name] = value;
+    }
+    return { status: r.status, body, headers };
+  } catch (e) {
+    return { status: 0, body: "", error: String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function injectFetch(req: RelayRequest): Promise<InTabResult | undefined> {
+  const deadlineAt = req.deadlineAt ?? Date.now() + 90_000;
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error("relay request deadline expired before injection");
+  const tabId = await ensureOeTab(remaining);
+  if (Date.now() >= deadlineAt) throw new Error("relay request deadline expired before injection");
   const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: await ensureOeTab() },
+    target: { tabId },
     func: inTabProxy,
     args: [req],
   });
@@ -273,9 +361,15 @@ async function runProxy(req: RelayRequest): Promise<InTabResult> {
     out = await injectFetch(req);
   } catch {
     // executeScript itself threw — the parked tab was discarded or died between
-    // ensure and inject. Drop the cached id so ensureOeTab rebuilds a fresh tab,
-    // then retry once. (A genuine fetch failure surfaces as out.error below, not
-    // here, so we don't needlessly rebuild the tab for network errors.)
+    // ensure and inject. Safe reads may rebuild the tab and retry once. Writes
+    // are never replayed because an executeScript failure can have an ambiguous
+    // outcome. (A genuine fetch failure surfaces as out.error below.)
+    const method = req.method.toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+      throw new Error(
+        `in-tab ${method} outcome is unknown after injection failure; not retried to avoid a duplicate write`,
+      );
+    }
     await clearStoredTabId();
     out = await injectFetch(req);
   }
@@ -290,16 +384,33 @@ async function postResult(payload: {
   reqId: string;
   status?: number;
   body?: string;
+  headers?: Record<string, string>;
   error?: string;
-}): Promise<void> {
-  try {
-    await fetch(`${RELAY_BASE}/result`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+}, deadlineAt?: number): Promise<void> {
+  let body = JSON.stringify(payload);
+  if (new TextEncoder().encode(body).byteLength > 4_000_000) {
+    body = JSON.stringify({
+      reqId: payload.reqId,
+      error: "serialized relay result exceeds 4000000 bytes",
     });
-  } catch {
-    // server gone; nothing to do.
+  }
+  const remaining = (deadlineAt ?? Date.now() + 10_000) - Date.now();
+  if (remaining <= 0) throw new Error("relay request deadline expired before result acknowledgement");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remaining);
+  try {
+    const res = await fetch(`${RELAY_BASE}/result`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await getRelayHeaders()) },
+      body,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`relay rejected result (${res.status}): ${detail.slice(0, 200)}`);
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -308,26 +419,53 @@ async function handleRequest(reqId: string, req: RelayRequest): Promise<void> {
   activityStart(reqId, req);
   inFlight += 1;
   setBadge("busy");
+  let acknowledged = false;
   try {
-    const { status, body } = await runProxy(req);
-    await postResult({ reqId, status, body });
-    activityDone(reqId, status, Date.now() - startedAt);
+    let result: InTabResult;
+    try {
+      result = await runProxy(req);
+    } catch (e) {
+      result = { status: 0, body: "", error: e instanceof Error ? e.message : String(e) };
+    }
+    if (result.error) {
+      await postResult({ reqId, error: result.error }, req.deadlineAt);
+      activityDone(reqId, 0, Date.now() - startedAt);
+    } else {
+      await postResult(
+        { reqId, status: result.status, body: result.body, headers: result.headers },
+        req.deadlineAt,
+      );
+      activityDone(reqId, result.status, Date.now() - startedAt);
+    }
+    acknowledged = true;
   } catch (e) {
-    await postResult({ reqId, error: e instanceof Error ? e.message : String(e) });
-    activityDone(reqId, 0, Date.now() - startedAt);
+    setBadge("err");
+    throw e;
   } finally {
     inFlight = Math.max(0, inFlight - 1);
-    if (inFlight === 0) setBadge("ok");
+    if (inFlight === 0 && acknowledged) setBadge("ok");
   }
 }
 
 async function pollOnce(): Promise<void> {
-  const res = await fetch(`${RELAY_BASE}/poll`, { method: "GET" });
-  if (res.status === 200) {
-    const { reqId, req } = (await res.json()) as { reqId: string; req: RelayRequest };
-    void handleRequest(reqId, req); // don't block the next poll
-  } else {
-    await res.text().catch(() => "");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35_000);
+  try {
+    const res = await fetch(`${RELAY_BASE}/poll`, {
+      method: "GET",
+      headers: await getRelayHeaders(),
+      signal: controller.signal,
+    });
+    if (res.status === 200) {
+      const { reqId, req } = (await res.json()) as { reqId: string; req: RelayRequest };
+      await handleRequest(reqId, req);
+      return;
+    }
+    if (res.status === 204) return;
+    const detail = await res.text().catch(() => "");
+    throw new Error(`relay poll rejected (${res.status}): ${detail.slice(0, 200)}`);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -359,6 +497,12 @@ function openReadme(): void {
 
 // Clicking the toolbar icon explains how the relay works.
 chrome.action.onClicked.addListener(() => openReadme());
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "oe-relay-client-headers") return false;
+  void getRelayHeaders().then(sendResponse);
+  return true;
+});
 
 chrome.runtime.onStartup.addListener(() => void pollLoop());
 chrome.runtime.onInstalled.addListener((details) => {

@@ -98,30 +98,31 @@ function getAnswersDb(): AnswersDb | null {
 	return answersDbHandle;
 }
 
-// Login email (or auth sub) captured on every authenticated tool call — the
-// same account key the Python CLI writes, so the tables join cleanly.
-let lastKnownAccount: string | null = null;
-
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Space question submissions to respect OpenEvidence's per-account question rate
  * (~1/sec). Waits — never errors — for the remainder of askMinIntervalMs since
  * the last recorded ask, coordinated across sessions via the shared ask_log.
- * Records this ask and returns how long it waited plus the trailing-hour count.
+ * Atomically reserves this ask and returns how long it waited plus the
+ * trailing-hour count.
  */
-async function paceAsk(): Promise<{ waitedMs: number; asksLastHour: number }> {
+async function paceAsk(account: string): Promise<{
+	waitedMs: number;
+	asksLastHour: number;
+	reservedAt?: number;
+}> {
 	const db = getAnswersDb();
-	const account = lastKnownAccount ?? "unknown";
-	if (!db || config.askMinIntervalMs <= 0) {
-		return { waitedMs: 0, asksLastHour: db ? db.asksSince(account, Date.now() - 3_600_000) : 0 };
+	if (!db) {
+		return { waitedMs: 0, asksLastHour: 0 };
 	}
 	let waitedMs = 0;
+	let reservedAt: number | undefined;
 	try {
-		const gap = Date.now() - db.lastAskAt(account);
-		waitedMs = Math.max(0, config.askMinIntervalMs - gap);
+		const now = Date.now();
+		reservedAt = db.reserveAsk(account, now, config.askMinIntervalMs);
+		waitedMs = Math.max(0, reservedAt - now);
 		if (waitedMs > 0) await sleep(waitedMs);
-		db.recordAsk(account, Date.now());
 	} catch (err) {
 		process.stderr.write(`[ask-pacing] ${String(err)}\n`);
 	}
@@ -132,11 +133,12 @@ async function paceAsk(): Promise<{ waitedMs: number; asksLastHour: number }> {
 			return 0;
 		}
 	})();
-	return { waitedMs, asksLastHour };
+	return { waitedMs, asksLastHour, reservedAt };
 }
 
 /** Best-effort upsert of a fetched answer; storage must never fail the tool. */
 function persistAnswer(
+	account: string,
 	article: Record<string, unknown>,
 	resolvedAnswer: string | null,
 	figures: ReturnType<typeof extractFigures>,
@@ -148,7 +150,7 @@ function persistAnswer(
 		if (!db || !articleId || status === "" || resolvedAnswer == null) return;
 		const inputs = article.inputs as { question?: unknown } | undefined;
 		db.upsert({
-			account: lastKnownAccount ?? "unknown",
+			account,
 			articleId,
 			title: typeof article.title === "string" ? article.title : null,
 			question: typeof inputs?.question === "string" ? inputs.question : null,
@@ -265,7 +267,7 @@ server.registerTool(
 		description:
 			"Fetch an article (answer) by id or /ask/ URL — the fetch-later half of fire-and-forget oe_ask. " +
 			"Returns the current status; if it is still 'pending' either retry later or pass wait_for_completion:true to block until the answer is ready. " +
-			"Completed answers are served from the local SQLite store when available (from_cache:true, zero network) — pass refresh:true to force a re-fetch from OpenEvidence.",
+			"After verifying the active account, completed answers are served from that account's local SQLite cache when available (from_cache:true) — pass refresh:true to force a re-fetch from OpenEvidence.",
 		inputSchema: z.object({
 			article_id: z
 				.string()
@@ -285,35 +287,33 @@ server.registerTool(
 		}),
 	},
 	async (args) => {
-		const cachedId = extractArticleId(args.article_id);
-		// Cache check runs BEFORE withClient so a hit costs zero network round-trips
-		// (withClient itself does an auth GET over the relay).
-		if (cachedId && !(args.refresh ?? false)) {
-			const rec = getAnswersDb()?.getByArticleId(cachedId);
-			if (rec && rec.status === "success" && rec.answerMarkdown != null) {
-				return ok({
-					article_id: cachedId,
-					status: rec.status,
-					extracted_answer_raw: rec.answerMarkdown,
-					...(args.strip_citation_markers ?? false
-						? { extracted_answer_clean: stripCitationMarkers(rec.answerMarkdown) }
-						: {}),
-					figures: safeJsonParse(rec.figuresJson) ?? [],
-					citations: safeJsonParse(rec.citationsJson) ?? [],
-					follow_up_questions: safeJsonParse(rec.followUpJson) ?? [],
-					artifacts: null,
-					from_cache: true,
-					fetched_at: rec.fetchedAt,
-					note: `Served from the local answers store (${config.dbPath}). Pass refresh:true to re-fetch from OpenEvidence and regenerate artifacts.`,
-				});
-			}
+		const requestedArticleId = extractArticleId(args.article_id);
+		if (!requestedArticleId) {
+			return fail(
+				`Could not find an article UUID in "${args.article_id}". Pass a UUID or an openevidence.com/ask/<id> URL.`,
+			);
 		}
-		return withClient(async (client) => {
-			const articleId = extractArticleId(args.article_id);
-			if (!articleId) {
-				return fail(
-					`Could not find an article UUID in "${args.article_id}". Pass a UUID or an openevidence.com/ask/<id> URL.`,
-				);
+		return withClient(async (client, account) => {
+			const articleId = requestedArticleId;
+			if (!(args.refresh ?? false)) {
+				const rec = getAnswersDb()?.getByArticleId(account, articleId);
+				if (rec && rec.status === "success" && rec.answerMarkdown != null) {
+					return ok({
+						article_id: articleId,
+						status: rec.status,
+						extracted_answer_raw: rec.answerMarkdown,
+						...(args.strip_citation_markers ?? false
+							? { extracted_answer_clean: stripCitationMarkers(rec.answerMarkdown) }
+							: {}),
+						figures: safeJsonParse(rec.figuresJson) ?? [],
+						citations: safeJsonParse(rec.citationsJson) ?? [],
+						follow_up_questions: safeJsonParse(rec.followUpJson) ?? [],
+						artifacts: null,
+						from_cache: true,
+						fetched_at: rec.fetchedAt,
+						note: `Served from the account-scoped local answers store (${config.dbPath}). Pass refresh:true to re-fetch from OpenEvidence and regenerate artifacts.`,
+					});
+				}
 			}
 			const article = (args.wait_for_completion ?? false)
 				? await client.waitForArticle(articleId, {
@@ -331,7 +331,7 @@ server.registerTool(
 						})
 					: null;
 			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
-			persistAnswer(article, answer, figures);
+			persistAnswer(account, article, answer, figures);
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
@@ -357,8 +357,8 @@ server.registerTool(
 	{
 		title: "Search Stored Answers (local FTS)",
 		description:
-			"Full-text search (SQLite FTS5) over every answer previously fetched by oe_ask/oe_article_get — questions, titles, and answer bodies. " +
-			"Millisecond-fast and fully offline: no OpenEvidence traffic, no rate-limit cost. " +
+			"Account-scoped full-text search (SQLite FTS5) over answers previously fetched by oe_ask/oe_article_get — questions, titles, and answer bodies. " +
+			"The active browser login is verified first, then only that account's answers are searched; results are never mixed across logins. " +
 			"Covers only answers this MCP has fetched and stored locally; for your complete server-side history use oe_history_list. " +
 			"Snippets mark matches with »…«.",
 		inputSchema: z.object({
@@ -370,26 +370,28 @@ server.registerTool(
 			limit: z.number().int().min(1).max(50).default(10).optional(),
 		}),
 	},
-	async (args) => {
-		const db = getAnswersDb();
-		if (!db) {
-			return fail(`Local answers store is unavailable (could not open ${config.dbPath}).`);
-		}
-		const matches = db.search(args.query, args.limit ?? 10);
-		return ok({
-			total_stored: db.count(),
-			match_count: matches.length,
-			matches: matches.map((m) => ({
-				article_id: m.articleId,
-				title: m.title,
-				question: m.question,
-				snippet: m.snippet,
-				datetime_created: m.datetimeCreated,
-				fetched_at: m.fetchedAt,
-				url: `https://www.openevidence.com/ask/${m.articleId}`,
-			})),
-		});
-	},
+	async (args) =>
+		withClient(async (_client, account) => {
+			const db = getAnswersDb();
+			if (!db) {
+				return fail(`Local answers store is unavailable (could not open ${config.dbPath}).`);
+			}
+			const matches = db.search(account, args.query, args.limit ?? 10);
+			return ok({
+				account,
+				total_stored: db.count(account),
+				match_count: matches.length,
+				matches: matches.map((m) => ({
+					article_id: m.articleId,
+					title: m.title,
+					question: m.question,
+					snippet: m.snippet,
+					datetime_created: m.datetimeCreated,
+					fetched_at: m.fetchedAt,
+					url: `https://www.openevidence.com/ask/${m.articleId}`,
+				})),
+			});
+		}),
 );
 
 server.registerTool(
@@ -431,7 +433,7 @@ server.registerTool(
 		}),
 	},
 	async (args) =>
-		withClient(async (client) => {
+		withClient(async (client, account) => {
 			const timeoutMs = (args.timeout_sec ?? 120) * 1000;
 			const intervalMs = args.poll_interval_ms ?? config.pollIntervalMs;
 
@@ -457,9 +459,25 @@ server.registerTool(
 				articleType: args.article_type,
 				variantConfigurationFile: args.variant_configuration_file,
 			};
-			
+
 			// Respect the per-account question rate before firing the POST.
-			const pacing = await paceAsk();
+			const pacing = await paceAsk(account);
+			if (pacing.waitedMs > 0) {
+				const rechecked = await client.getAuthStatus();
+				const currentAccount = authenticatedAccount(rechecked);
+				if (!rechecked.authenticated || currentAccount !== account) {
+					if (pacing.reservedAt !== undefined) {
+						try {
+							getAnswersDb()?.cancelAskReservation(account, pacing.reservedAt);
+						} catch (error) {
+							process.stderr.write(`[ask-pacing] could not release reservation: ${String(error)}\n`);
+						}
+					}
+					return fail(
+						"The active OpenEvidence account changed while this ask was waiting for its rate-limit slot; the question was not submitted.",
+					);
+				}
+			}
 
 			const created = await client.ask(askPayload);
 			const articleId = String((created as { id?: string }).id ?? "");
@@ -482,7 +500,7 @@ server.registerTool(
 					created,
 				});
 			}
-			
+
 			const article = await client.waitForArticle(articleId, { timeoutMs, intervalMs });
 			const figures = extractFigures(article);
 			const answerRaw = extractAnswerText(article);
@@ -492,9 +510,9 @@ server.registerTool(
 							validateWithCrossref: args.crossref_validate ?? config.crossrefValidate,
 						})
 					: null;
-			
+
 			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
-			persistAnswer(article, answer, figures);
+			persistAnswer(account, article, answer, figures);
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
@@ -891,7 +909,7 @@ function formatArtifactsForResponse(
 }
 
 async function withClient(
-	fn: (client: OpenEvidenceClient) => Promise<{
+	fn: (client: OpenEvidenceClient, account: string) => Promise<{
 		content: { type: "text"; text: string }[];
 		isError?: boolean;
 		structuredContent?: Record<string, unknown>;
@@ -900,7 +918,8 @@ async function withClient(
 	const client = new OpenEvidenceClient(config);
 	if (config.relayTransport === "all") {
 		const relay = await getRelay();
-		if (!relay || !relay.isConnected()) {
+		const relaySession = relay ? await relay.openSession() : null;
+		if (!relaySession) {
 			return fail(
 				"OpenEvidence MCP runs entirely through the browser-extension relay. " +
 					"Load extension/dist in your browser (chrome://extensions → Load unpacked), " +
@@ -908,27 +927,36 @@ async function withClient(
 					"(Set OE_MCP_RELAY_TRANSPORT=off to fall back to the legacy cookie path.)",
 			);
 		}
-		client.useRelay(relay);
+		client.useRelay(relaySession);
 	}
 	try {
 		await client.init();
 		const auth = await client.getAuthStatus();
-		const user = (auth as { user?: { email?: string; sub?: string } }).user;
-		lastKnownAccount = user?.email ?? user?.sub ?? lastKnownAccount;
 		if (!auth.authenticated) {
 			return fail(
 				config.relayTransport === "all"
 					? `Session is not authenticated (status ${auth.statusCode}). The relay's openevidence.com tab is not logged in — sign in there, then retry.`
 					: `Session is not authenticated (status ${auth.statusCode}). Paste fresh browser cookies into ${config.cookiesPath} and run: npm run login`,
+				);
+		}
+		const account = authenticatedAccount(auth);
+		if (!account) {
+			return fail(
+				"OpenEvidence authenticated successfully but /api/auth/me returned no stable email/sub account identifier; refusing to mix account-scoped local data.",
 			);
 		}
-		return await fn(client);
+		return await fn(client, account);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return fail(message);
 	} finally {
 		await client.close();
 	}
+}
+
+function authenticatedAccount(auth: unknown): string | null {
+	const user = (auth as { user?: { email?: string; sub?: string } } | undefined)?.user;
+	return user?.email ?? user?.sub ?? null;
 }
 
 function ok(data: unknown) {

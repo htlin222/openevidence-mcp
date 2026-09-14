@@ -27,12 +27,14 @@ import { RELAY_VERSION } from "./relay-server.js";
 const HEALTH_TIMEOUT_MS = 1_500;
 const HEALTH_REFRESH_MS = 2_000;
 const SPAWN_WAIT_MS = 5_000;
+const EXTENSION_RECONNECT_WAIT_MS = 3_000;
 const REQUEST_SLACK_MS = 15_000; // client waits this much past the relay's own timeout
 
 interface HealthInfo {
   connected: boolean;
   version: number | null;
   pid: number | null;
+  leaseId: string | null;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -50,11 +52,17 @@ async function probeHealth(port: number, timeoutMs = HEALTH_TIMEOUT_MS): Promise
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctrl.signal });
     if (!res.ok) return null;
-    const body = (await res.json()) as { connected?: boolean; version?: number; pid?: number };
+    const body = (await res.json()) as {
+      connected?: boolean;
+      version?: number;
+      pid?: number;
+      leaseId?: string;
+    };
     return {
       connected: body.connected === true,
       version: typeof body.version === "number" ? body.version : null,
       pid: typeof body.pid === "number" ? body.pid : null,
+      leaseId: typeof body.leaseId === "string" ? body.leaseId : null,
     };
   } catch {
     return null;
@@ -111,6 +119,16 @@ async function waitForHealth(port: number, timeoutMs = SPAWN_WAIT_MS): Promise<b
     if (h && h.version === RELAY_VERSION) return true;
     if (Date.now() > deadline) return false;
     await sleep(150);
+  }
+}
+
+async function waitForExtension(port: number, timeoutMs = EXTENSION_RECONNECT_WAIT_MS): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const h = await probeHealth(port, 500);
+    if (h?.version === RELAY_VERSION && h.connected) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(100);
   }
 }
 
@@ -173,6 +191,19 @@ export class RelayClient {
     }
   }
 
+  /** Re-probe and, when the daemon died, respawn it before a tool rejects. */
+  async ensureConnected(): Promise<boolean> {
+    const live = await probeHealth(this.port);
+    if (live?.version === RELAY_VERSION) {
+      this.healthy = live.connected;
+      return this.healthy;
+    }
+    this.healthy = false;
+    if (!(await this.ensureDaemon())) return false;
+    this.healthy = await waitForExtension(this.port);
+    return this.healthy;
+  }
+
   private async refresh(): Promise<void> {
     const h = await probeHealth(this.port);
     this.healthy = h !== null && h.connected && h.version === RELAY_VERSION;
@@ -182,19 +213,49 @@ export class RelayClient {
     return this.healthy;
   }
 
+  /** Capture the active extension lease for one logical MCP operation. */
+  async openSession(): Promise<{
+    isConnected(): boolean;
+    request(req: {
+      method: string;
+      path: string;
+      body?: string;
+    }): Promise<{ status: number; body: string; headers?: Record<string, string> }>;
+  } | null> {
+    if (!(await this.ensureConnected())) return null;
+    const health = await probeHealth(this.port);
+    const leaseId = health?.version === RELAY_VERSION ? health.leaseId : null;
+    if (!health?.connected || !leaseId) return null;
+    return {
+      isConnected: () => this.healthy,
+      request: (req) => this.request(req, { expectedLeaseId: leaseId }),
+    };
+  }
+
   async request(
     req: { method: string; path: string; body?: string },
-    opts?: { timeoutMs?: number },
-  ): Promise<{ status: number; body: string }> {
+    opts?: { timeoutMs?: number; expectedLeaseId?: string },
+  ): Promise<{ status: number; body: string; headers?: Record<string, string> }> {
+    if (!this.healthy && !(await this.ensureConnected())) {
+      throw new Error("relay: browser extension is not connected");
+    }
     try {
-      return await this.postRelay(req, opts?.timeoutMs);
+      return await this.postRelay(req, opts?.timeoutMs, opts?.expectedLeaseId);
     } catch (err) {
       if (!isConnRefused(err)) throw err;
-      // Cached health was stale: the daemon died between probes. Respawn + retry once.
+      // Cached health was stale: the daemon died between probes. A write may
+      // already have reached OpenEvidence, so never replay it automatically.
       this.healthy = false;
       const up = await this.ensureDaemon();
       if (!up) throw err;
-      const out = await this.postRelay(req, opts?.timeoutMs);
+      const method = req.method.toUpperCase();
+      if (method !== "GET" && method !== "HEAD") {
+        throw new Error(
+          `relay: ${method} outcome is unknown after daemon disconnect; not retried to avoid a duplicate write`,
+          { cause: err },
+        );
+      }
+      const out = await this.postRelay(req, opts?.timeoutMs, opts?.expectedLeaseId);
       void this.refresh();
       return out;
     }
@@ -203,7 +264,8 @@ export class RelayClient {
   private async postRelay(
     req: { method: string; path: string; body?: string },
     timeoutMs?: number,
-  ): Promise<{ status: number; body: string }> {
+    expectedLeaseId?: string,
+  ): Promise<{ status: number; body: string; headers?: Record<string, string> }> {
     const ctrl = new AbortController();
     const limit = (timeoutMs ?? 90_000) + REQUEST_SLACK_MS;
     const timer = setTimeout(() => ctrl.abort(), limit);
@@ -211,7 +273,7 @@ export class RelayClient {
       const res = await fetch(`http://127.0.0.1:${this.port}/relay`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...req, timeoutMs }),
+        body: JSON.stringify({ ...req, timeoutMs, expectedLeaseId }),
         signal: ctrl.signal,
       });
       const data = (await res.json()) as {
@@ -219,11 +281,12 @@ export class RelayClient {
         status?: number;
         body?: string;
         error?: string;
+        headers?: Record<string, string>;
       };
       if (!res.ok || data.ok === false) {
         throw new Error(data.error ?? `relay daemon returned HTTP ${res.status}`);
       }
-      return { status: data.status ?? 0, body: data.body ?? "" };
+      return { status: data.status ?? 0, body: data.body ?? "", headers: data.headers };
     } finally {
       clearTimeout(timer);
     }

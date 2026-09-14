@@ -23,7 +23,7 @@
 
 OpenEvidence protects its API with bot detection that blocks plain server requests. This project removes that problem: when your AI tool asks OpenEvidence a question, the request is run **inside your own logged-in OpenEvidence browser tab** — so it carries your genuine browser session and is never challenged.
 
-A small **Chromium browser extension** lends its session to a localhost relay; the MCP server speaks to that relay. The extension is a generic authenticated fetch proxy — all the OpenEvidence logic stays in the local server, and **your browser login is the only credential**. No API key, no cookie file, no Playwright, no headless browser.
+A small **Chromium browser extension** lends its session to a localhost relay; the MCP server speaks to that relay. The extension is a narrowly allowlisted authenticated fetch bridge — all the OpenEvidence logic stays in the local server, and **your browser login is the only OpenEvidence credential**. No API key, no cookie file, no Playwright, no headless browser.
 
 It is designed for local personal workflows where you already have lawful access to OpenEvidence. It does not bypass authentication, remove access controls, redistribute OpenEvidence content, or include any OpenEvidence data in this repository.
 
@@ -160,7 +160,7 @@ Page fetches count against the same account budget as API calls, so they run thr
 
 Every completed answer from `oe_ask` / `oe_article_get` is upserted into a local SQLite table (`answers`) in the same file the collections tooling already uses (`~/.openevidence-mcp/db/oe.sqlite`). This gives you two things for free:
 
-- **Full-text search over what you've already asked** — **`oe_answers_search("query")`** runs an FTS5 query across questions, titles, and answer bodies and returns highlighted `»…«` snippets. It's fully offline: no OpenEvidence traffic, no rate-limit cost. Great for "did I already look this up?" before spending a query.
+- **Full-text search over what you've already asked** — **`oe_answers_search("query")`** verifies the active browser account, then runs an account-scoped FTS5 query across locally stored questions, titles, and answer bodies. It returns highlighted `»…«` snippets without spending a question. Great for "did I already look this up?" before asking again.
 
   ```jsonc
   // oe_answers_search({ query: "CAPEOX duration neurotoxicity" })
@@ -207,15 +207,17 @@ Two health checks, two speeds:
 ## Privacy & security
 
 - The relay listens on **localhost only** (`127.0.0.1:8787`) — nothing is exposed to the network.
-- The extension and server store **no credentials**. Your OpenEvidence session lives in your browser, as always.
-- The extension only acts on requests from your own local relay, and only against `openevidence.com`.
+- The extension and server store **no OpenEvidence credentials**. The extension stores only a random local relay capability; your OpenEvidence session stays in the browser.
+- Ordinary web pages cannot use the relay: extension endpoints require an extension Origin plus a random per-install capability, CORS never uses a wildcard, and the daemon accepts only the exact OpenEvidence routes/methods used by this project.
+- The daemon leases itself to one extension installation at a time, so different browser profiles/accounts are never silently pooled. A stopped installation's lease expires automatically once no request is pending.
+- Same-user local processes are inside the localhost trust boundary and can call the daemon-facing `/relay` endpoint; do not run untrusted software under your OS account.
 - This repository contains **connector code only** — no OpenEvidence content, datasets, cookies, or account material.
 
 ## Troubleshooting
 
 - **Extension badge not green / `connected:false`?** Make sure you're logged in to openevidence.com in that browser with a tab open, then reload the extension (`chrome://extensions` → ↻).
 - **Tools fail with “relay not connected”?** Start your AI tool / MCP server so the daemon comes up, then `curl -s http://127.0.0.1:8787/health`. If a previous build is stuck, `make kill-all` and reconnect the MCP server.
-- **Run the relay in one browser at a time** if you've loaded the extension in several — requests go to whichever polls first.
+- **Extension says “paired channel required”?** Another browser profile currently owns the relay lease. Stop that extension, wait about 35 seconds with no pending request, then retry from the intended profile.
 - **DataDome 403 on the legacy cookie path?** See [Doctor](#doctor-legacy-cookie-path) below — relevant only when `OE_MCP_RELAY_TRANSPORT=off`.
 
 ## Register with MCP clients

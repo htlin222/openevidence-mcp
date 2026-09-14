@@ -5,8 +5,12 @@ CLAUDE ?= claude
 CODEX ?= codex
 AGY ?= agy-cli
 MCP_NAME ?= openevidence
-RELAY_PORT ?= 8787
-RELAY_PID ?= $(HOME)/.openevidence-mcp/relay.pid
+# Single source of truth for the relay port is .env (OE_MCP_RELAY_PORT); the
+# extension build and the MCP client env read the same value. Hardcoding it
+# here is what caused the 8787/8780 drift.
+ENV_RELAY_PORT := $(shell awk -F= '/^[[:space:]]*OE_MCP_RELAY_PORT[[:space:]]*=/ {gsub(/[[:space:]"]/,"",$$2); print $$2}' $(CURDIR)/.env 2>/dev/null)
+RELAY_PORT ?= $(if $(ENV_RELAY_PORT),$(ENV_RELAY_PORT),8787)
+RELAY_PID ?= $(HOME)/.openevidence-mcp/relay-$(RELAY_PORT).pid
 COOKIES ?= $(CURDIR)/cookies.json
 HAR ?= $(CURDIR)/www.openevidence.com_dotflow.har
 HAR_MINE ?= $(CURDIR)/www.openevidence.com_dotflow_mine.har
@@ -35,7 +39,7 @@ all: node_modules build extension install-claude-global install-codex-global
 	@printf '      2. turn on  Developer mode  (top-right)\n'
 	@printf '      3. Load unpacked  →  %s\n' "$(CURDIR)/extension/dist"
 	@printf '      4. stay logged in to openevidence.com in that browser\n'
-	@printf '   verify:  curl -s http://127.0.0.1:8787/health   (expect connected:true)\n\n'
+	@printf '   verify:  curl -s http://127.0.0.1:$(RELAY_PORT)/health   (expect connected:true)\n\n'
 
 help:
 	@printf '\033[1mOpenEvidence MCP — make targets\033[0m  (bare \`make\` == \`make all\`)\n\n'
@@ -85,7 +89,7 @@ build:
 # renamed file would otherwise linger across rebuilds.
 extension:
 	rm -rf "$(CURDIR)/extension/dist"
-	cd $(CURDIR)/extension && $(NPM) install && $(NPM) run build
+	cd $(CURDIR)/extension && $(NPM) install && OE_MCP_RELAY_PORT="$(RELAY_PORT)" $(NPM) run build
 
 # Stop every running server/daemon, then build the server fresh from a clean
 # dist/. The everyday "I changed source, give me a clean running build" cycle.
@@ -97,7 +101,7 @@ rebuild:
 # Use after changing how the server is launched/registered, not just its code.
 reinstall:
 	$(MAKE) kill-all
-	$(MAKE) install-claude-global install-codex-global
+	$(MAKE) extension install-claude-global install-codex-global
 
 check:
 	$(NPM) run check
@@ -129,7 +133,7 @@ sync-mine-from-har:
 install-claude-global: build
 	@if command -v $(CLAUDE) >/dev/null 2>&1; then \
 		$(CLAUDE) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true; \
-		$(CLAUDE) mcp add-json --scope user $(MCP_NAME) "$$(node -e 'const [command, server, cookies] = process.argv.slice(1); process.stdout.write(JSON.stringify({ type: "stdio", command, args: [server], env: { OE_MCP_COOKIES_PATH: cookies } }));' "$(NODE)" "$(SERVER)" "$(COOKIES)")"; \
+		$(CLAUDE) mcp add-json --scope user $(MCP_NAME) "$$(node -e 'const [command, server, cookies, port] = process.argv.slice(1); process.stdout.write(JSON.stringify({ type: "stdio", command, args: [server], env: { OE_MCP_COOKIES_PATH: cookies, OE_MCP_RELAY_PORT: port } }));' "$(NODE)" "$(SERVER)" "$(COOKIES)" "$(RELAY_PORT)")"; \
 		echo "[ok] registered '$(MCP_NAME)' with Claude (user scope)"; \
 	else \
 		echo "[skip] '$(CLAUDE)' CLI not found — skipping Claude registration"; \
@@ -138,7 +142,7 @@ install-claude-global: build
 install-codex-global: build
 	@if command -v $(CODEX) >/dev/null 2>&1; then \
 		$(CODEX) mcp remove $(MCP_NAME) >/dev/null 2>&1 || true; \
-		$(CODEX) mcp add $(MCP_NAME) --env OE_MCP_COOKIES_PATH="$(COOKIES)" -- $(NODE) "$(SERVER)"; \
+		$(CODEX) mcp add $(MCP_NAME) --env OE_MCP_COOKIES_PATH="$(COOKIES)" --env OE_MCP_RELAY_PORT="$(RELAY_PORT)" -- $(NODE) "$(SERVER)"; \
 		echo "[ok] registered '$(MCP_NAME)' with Codex"; \
 	else \
 		echo "[skip] '$(CODEX)' CLI not found — skipping Codex registration"; \
@@ -146,7 +150,7 @@ install-codex-global: build
 
 install-agy-global: build
 	$(AGY) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true
-	$(AGY) mcp add --scope user -e OE_MCP_COOKIES_PATH="$(COOKIES)" $(MCP_NAME) $(NODE) "$(SERVER)"
+	$(AGY) mcp add --scope user -e OE_MCP_COOKIES_PATH="$(COOKIES)" -e OE_MCP_RELAY_PORT="$(RELAY_PORT)" $(MCP_NAME) $(NODE) "$(SERVER)"
 
 install-all: install-claude-global install-codex-global install-agy-global
 

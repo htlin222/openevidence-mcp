@@ -297,6 +297,7 @@ export async function withExponentialBackoff<T>(
   config: RetryConfig = DEFAULT_RATE_LIMIT_CONFIG.retry,
   clock: Clock = SYSTEM_CLOCK,
   sink: BackoffSink = {},
+  shouldRetry?: (error: unknown) => boolean,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
@@ -305,7 +306,9 @@ export async function withExponentialBackoff<T>(
     } catch (error) {
       lastError = error;
       const status = (error as RateLimitError | undefined)?.status;
-      const retryable = status === undefined ? true : isRetryableStatus(status);
+      const retryable = shouldRetry
+        ? shouldRetry(error)
+        : status === undefined || isRetryableStatus(status);
       if (!retryable || attempt === config.maxRetries) {
         throw error;
       }

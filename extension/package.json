@@ -1,6 +1,6 @@
 {
 	"name": "openevidence-mcp-relay-extension",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"private": true,
 	"description": "Brave/Chrome extension companion for openevidence-mcp: runs requests inside your own logged-in OpenEvidence tab so they carry your genuine browser session. Localhost-only.",
 	"type": "module",

@@ -12,6 +12,7 @@ import {
 import {
   HttpError,
   RateLimitController,
+  isRetryableStatus,
   parseRetryAfterMs,
   withExponentialBackoff,
   type ClinicalPriority,
@@ -35,7 +36,7 @@ export interface RelayTransport {
     method: string;
     path: string;
     body?: string;
-  }): Promise<{ status: number; body: string }>;
+  }): Promise<{ status: number; body: string; headers?: Record<string, string> }>;
 }
 
 export class OpenEvidenceClient {
@@ -270,6 +271,8 @@ export class OpenEvidenceClient {
     init: RequestInit | undefined,
     priority: ClinicalPriority = "routine",
   ): Promise<Response> {
+    const method = String(init?.method ?? "GET").toUpperCase();
+    const retrySafe = method === "GET" || method === "HEAD";
     return withExponentialBackoff(
       async () => {
         await this.limiter.acquire(priority);
@@ -303,6 +306,13 @@ export class OpenEvidenceClient {
         }
       },
       this.config.rateLimit.retry,
+      undefined,
+      undefined,
+      (error) => {
+        if (!retrySafe) return false;
+        const status = (error as { status?: number } | undefined)?.status;
+        return status === undefined || isRetryableStatus(status);
+      },
     );
   }
 
@@ -330,7 +340,7 @@ export class OpenEvidenceClient {
     if (!relay) throw new Error("relay transport not set");
     const method = String(init.method ?? "GET").toUpperCase();
     const body = typeof init.body === "string" ? init.body : undefined;
-    const { status, body: respBody } = await relay.request({
+    const { status, body: respBody, headers } = await relay.request({
       method,
       path: fullUrl.pathname + fullUrl.search,
       body,
@@ -338,7 +348,7 @@ export class OpenEvidenceClient {
     const nullBody = status === 204 || status === 205 || status === 304;
     return new Response(nullBody ? null : respBody, {
       status,
-      headers: { "content-type": "application/json" },
+      headers: headers ?? { "content-type": "application/json" },
     });
   }
 }

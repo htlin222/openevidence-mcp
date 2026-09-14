@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "OpenEvidence MCP Relay",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "Runs OpenEvidence requests inside your own logged-in tab so they carry your genuine browser session. Companion for the local openevidence-mcp server; localhost-only.",
 	"permissions": ["scripting", "tabs", "storage", "alarms"],
 	"host_permissions": [

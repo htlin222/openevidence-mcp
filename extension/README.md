@@ -6,8 +6,8 @@ folder / `.crx` loads in all of them.
 
 It lets the MCP server run OpenEvidence requests **from inside your own logged-in
 tab**, so they carry the browser's genuine origin, cookies, and TLS — DataDome
-sees a normal session. It is a **generic authenticated fetch proxy**: it runs
-whatever `{method, path, body}` the server hands it and returns `{status, body}`.
+sees a normal session. It is a **narrowly allowlisted authenticated fetch bridge**:
+it runs only the OpenEvidence methods and paths accepted by the local daemon.
 All OpenEvidence logic stays in Node.
 
 It is **localhost-only**: the extension talks to `http://127.0.0.1:8787` (the
@@ -47,18 +47,18 @@ never quietly spends your account's rate-limit budget.
 
 ## Which browser handles a call
 
-The request is handled by **whichever browser has this extension installed and is
-logged in to openevidence.com** — that browser connects to the relay and answers.
-So you choose your browser simply by installing the extension there.
+The daemon leases itself to the **first live installation** of this extension,
+identified by a random per-install capability. It will not mix requests across
+browser profiles. To switch profiles, stop the active extension and wait about
+35 seconds with no pending request before connecting the intended profile.
 
 - **Install it in the browser you're logged into OpenEvidence with.** The in-tab
   request uses *that* browser's session; if that browser isn't logged in, the call
   fails with a 401/403 (the server says so).
 - **Keep one Chromium logged into openevidence.com with the extension loaded.**
   That single tab serves *all* concurrent Claude/Codex sessions through the shared
-  relay daemon — you don't need a browser per session. Only if you literally load
-  the extension in *two* browsers do requests race (a request goes to whichever
-  polls first), so pick one.
+  relay daemon. The daemon leases itself to one extension installation and rejects
+  other browser profiles instead of silently mixing their requests.
 
 ## Build
 

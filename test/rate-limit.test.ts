@@ -126,6 +126,26 @@ test("withExponentialBackoff: surfaces non-retryable 4xx immediately", async () 
   assert.equal(attempts, 1);
 });
 
+test("withExponentialBackoff: caller can forbid replay of an ambiguous write", async () => {
+  const clock = fakeClock();
+  let attempts = 0;
+  await assert.rejects(
+    () =>
+      withExponentialBackoff(
+        async () => {
+          attempts += 1;
+          throw new Error("connection reset after write");
+        },
+        cfg().retry,
+        clock,
+        {},
+        () => false,
+      ),
+    /connection reset/,
+  );
+  assert.equal(attempts, 1);
+});
+
 test("withExponentialBackoff: honors Retry-After hint over exponential", async () => {
   const clock = fakeClock();
   const sink = { delays: [] as number[] };
