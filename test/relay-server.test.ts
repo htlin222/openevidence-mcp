@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 
 import {
   RELAY_EXTENSION_HEADER,
@@ -167,6 +168,7 @@ test("relay: rejects ordinary web origins before they can poll, forge, or proxy"
   };
   try {
     for (const [path, init] of [
+      ["/health", { headers: { origin: "https://evil.example" } }],
       ["/poll", { headers: evilHeaders }],
       ["/result", { method: "POST", headers: evilHeaders, body: "{}" }],
       [
@@ -202,27 +204,49 @@ test("relay: extension endpoints require the non-simple channel marker", async (
   }
 });
 
-test("relay: marker-only no-Origin callers cannot impersonate the extension", async () => {
+test("relay: no-Origin callers without the capability header cannot poll or post results", async () => {
   const relay = await startRelayServer({ port: 0 });
   try {
     for (const [path, init] of [
-      ["/poll", { headers: { [RELAY_EXTENSION_HEADER]: RELAY_EXTENSION_HEADER_VALUE } }],
+      ["/poll", {}],
       [
         "/result",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [RELAY_EXTENSION_HEADER]: RELAY_EXTENSION_HEADER_VALUE,
-          },
-          body: "{}",
-        },
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
       ],
     ] as const) {
       const res = await fetch(`http://127.0.0.1:${relay.port}${path}`, init);
       assert.equal(res.status, 403);
     }
     assert.equal(relay.isConnected(), false);
+  } finally {
+    relay.close();
+  }
+});
+
+// Chromium omits the Origin header on fetches an extension makes to a host it
+// holds host_permissions for (sec-fetch-site: none). The real extension therefore
+// arrives with the capability header but NO Origin — that must be accepted, or
+// the relay can never pair with a live browser.
+test("relay: accepts the capability header without an Origin (real Chromium extension fetch)", async () => {
+  const relay = await startRelayServer({ port: 0 });
+  const noOrigin = { [RELAY_EXTENSION_HEADER]: RELAY_EXTENSION_HEADER_VALUE };
+  try {
+    const pollP = fetch(`http://127.0.0.1:${relay.port}/poll`, { headers: noOrigin }).then((r) =>
+      r.json(),
+    );
+    const pending = relay.request({ method: "GET", path: "/api/auth/me" }, { timeoutMs: 5000 });
+    const delivered = (await pollP) as { reqId: string };
+    assert.ok(delivered.reqId);
+    assert.equal(relay.isConnected(), true);
+
+    const res = await fetch(`http://127.0.0.1:${relay.port}/result`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...noOrigin },
+      body: JSON.stringify({ reqId: delivered.reqId, status: 200, body: '{"ok":1}' }),
+    });
+    assert.equal(res.status, 200);
+    const out = await pending;
+    assert.equal(out.status, 200);
   } finally {
     relay.close();
   }
@@ -395,6 +419,279 @@ test("relay: route matching is exact, not prefix-based", async () => {
       body: JSON.stringify({ method: "GET", path: "/api/auth/me" }),
     });
     assert.equal(res.status, 404);
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: /health reports rejected polls with the reason and path", async () => {
+  const relay = await startRelayServer({ port: 0 });
+  try {
+    const base = `http://127.0.0.1:${relay.port}`;
+    // no capability header → 403
+    const res = await fetch(`${base}/poll`);
+    assert.equal(res.status, 403);
+    const h = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+    assert.equal(h.rejected, 1);
+    assert.equal(h.lastRejectPath, "/poll");
+    assert.equal(h.lastRejectReason, "paired extension channel required");
+    assert.equal(typeof h.lastRejectAt, "number");
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: rejection log lines are rate-limited per reason", async () => {
+  let t = 1_000_000;
+  const lines: string[] = [];
+  const relay = await startRelayServer({ port: 0, now: () => t, logger: (m) => lines.push(m) });
+  try {
+    const base = `http://127.0.0.1:${relay.port}`;
+    await fetch(`${base}/poll`);
+    await fetch(`${base}/poll`);
+    t += 61_000;
+    await fetch(`${base}/poll`);
+    const rejects = lines.filter((l) => l.includes("rejected"));
+    assert.equal(rejects.length, 2);
+    assert.match(rejects[0], /GET \/poll/);
+    assert.match(rejects[0], /paired extension channel required/);
+    assert.match(rejects[0], /origin=no/);
+    assert.match(rejects[0], /capability=no/);
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: /health carries the paired extension's version header", async () => {
+  const relay = await startRelayServer({ port: 0 });
+  try {
+    const base = `http://127.0.0.1:${relay.port}`;
+    const pollP = fetch(`${base}/poll`, {
+      headers: { ...extensionHeaders, "x-openevidence-relay-extension": "0.4.1" },
+    });
+    const pending = relay.request({ method: "GET", path: "/api/auth/me" }, { timeoutMs: 5000 });
+    const delivered = (await (await pollP).json()) as { reqId: string };
+    const h = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+    assert.equal(h.extensionVersion, "0.4.1");
+    await post(`${base}/result`, { reqId: delivered.reqId, status: 200, body: "{}" });
+    await pending;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: rejection log rate limit is keyed on the daemon's own routes, not attacker paths", async () => {
+  let t = 1_000_000;
+  const lines: string[] = [];
+  const relay = await startRelayServer({ port: 0, now: () => t, logger: (m) => lines.push(m) });
+  try {
+    const base = `http://127.0.0.1:${relay.port}`;
+    const evil = { origin: "https://evil.example" };
+    const res1 = await fetch(`${base}/${randomUUID()}`, { headers: evil });
+    assert.equal(res1.status, 403);
+    const lastPath = `/${randomUUID()}`;
+    const res2 = await fetch(`${base}${lastPath}`, { headers: evil });
+    assert.equal(res2.status, 403);
+    const rejects = lines.filter((l) => l.includes("rejected"));
+    assert.equal(rejects.length, 1, "one log line per reason+normalised path per window");
+    const h = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+    assert.equal(h.rejected, 2);
+    assert.equal(h.lastRejectPath, lastPath);
+    assert.equal(h.lastRejectAt, t);
+  } finally {
+    relay.close();
+  }
+});
+
+const ASK = { method: "POST", path: "/api/article", body: "{}" } as const;
+const READ = { method: "GET", path: "/api/auth/me" } as const;
+type Delivered = { reqId: string; req: { method: string; path: string } };
+
+test("relay: asks are serialized and spaced from the previous ask's completion", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 200 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const a = relay.request(ASK, { timeoutMs: 5000 });
+    const b = relay.request(ASK, { timeoutMs: 5000 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    assert.equal(first.req.path, "/api/article");
+    const secondPoll = poll(`${base}/poll`);
+    const early = await Promise.race([
+      secondPoll.then(() => "delivered"),
+      new Promise<string>((r) => setTimeout(() => r("held"), 150)),
+    ]);
+    assert.equal(early, "held", "second ask must wait while the first is in flight");
+    const doneAt = Date.now();
+    await post(`${base}/result`, { reqId: first.reqId, status: 201, body: "{}" });
+    const second = (await secondPoll) as Delivered;
+    assert.equal(second.req.path, "/api/article");
+    assert.ok(Date.now() - doneAt >= 180, "second ask honoured askSpacingMs after the first completed");
+    await post(`${base}/result`, { reqId: second.reqId, status: 201, body: "{}" });
+    await a;
+    await b;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: reads are not blocked behind an in-flight ask", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 1000 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const ask = relay.request(ASK, { timeoutMs: 5000 });
+    const read = relay.request(READ, { timeoutMs: 5000 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    assert.equal(first.req.method, "POST");
+    const second = (await poll(`${base}/poll`)) as Delivered;
+    assert.equal(second.req.path, "/api/auth/me");
+    await post(`${base}/result`, { reqId: second.reqId, status: 200, body: "{}" });
+    await read;
+    await post(`${base}/result`, { reqId: first.reqId, status: 201, body: "{}" });
+    await ask;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: consecutive deliveries respect the global minimum gap", async () => {
+  const relay = await startRelayServer({ port: 0, minGapMs: 150 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const r1 = relay.request(READ, { timeoutMs: 5000 });
+    const r2 = relay.request(READ, { timeoutMs: 5000 });
+    const t0 = Date.now();
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    const second = (await poll(`${base}/poll`)) as Delivered;
+    assert.ok(Date.now() - t0 >= 140, "second delivery waited for minGapMs");
+    await post(`${base}/result`, { reqId: first.reqId, status: 200, body: "{}" });
+    await post(`${base}/result`, { reqId: second.reqId, status: 200, body: "{}" });
+    await r1;
+    await r2;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: a timed-out ask frees the ask lane", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 0 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const stuck = relay.request(ASK, { timeoutMs: 100 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    await assert.rejects(stuck, /did not respond/);
+    const next = relay.request(ASK, { timeoutMs: 5000 });
+    const second = (await poll(`${base}/poll`)) as Delivered;
+    assert.notEqual(second.reqId, first.reqId);
+    await post(`${base}/result`, { reqId: second.reqId, status: 201, body: "{}" });
+    await next;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: /health exposes the ask queue", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 1000 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const a = relay.request(ASK, { timeoutMs: 5000 });
+    const b = relay.request(ASK, { timeoutMs: 5000 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    const h = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+    assert.equal(h.askInFlight, true);
+    assert.equal(h.askWaiting, 1);
+    assert.equal(typeof h.lastAskAt, "number");
+    await post(`${base}/result`, { reqId: first.reqId, status: 201, body: "{}" });
+    await a;
+    relay.close(); // drops b
+    await assert.rejects(b);
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: a malformed result for an ask frees the ask lane", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 0 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const bad = relay.request(ASK, { timeoutMs: 5000 });
+    const rejected = assert.rejects(bad, /malformed result payload/);
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    const res = await post(`${base}/result`, { reqId: first.reqId, status: 200 });
+    assert.equal(res.status, 400);
+    await rejected;
+    const next = relay.request(ASK, { timeoutMs: 5000 });
+    const second = (await poll(`${base}/poll`)) as Delivered;
+    assert.notEqual(second.reqId, first.reqId);
+    await post(`${base}/result`, { reqId: second.reqId, status: 201, body: "{}" });
+    await next;
+  } finally {
+    relay.close();
+  }
+});
+
+// Resolves "held" if `p` is still pending after `ms`; clears its timer so the
+// runner does not stay alive waiting on it.
+const raceHeld = async <T>(p: Promise<T>, ms: number): Promise<T | "held"> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const held = new Promise<"held">((r) => {
+    timer = setTimeout(() => r("held"), ms);
+  });
+  try {
+    return await Promise.race([p, held]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+test("relay: an ask timing out re-flushes the already-parked poller", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 0 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const stuck = relay.request(ASK, { timeoutMs: 100 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    const next = relay.request(ASK, { timeoutMs: 5000 });
+    const parked = poll(`${base}/poll`); // parks: the lane is busy, nothing is eligible
+    await assert.rejects(stuck, /did not respond/);
+    const outcome = await raceHeld(parked.then((d) => (d as Delivered).reqId), 2000);
+    assert.notEqual(outcome, "held", "parked poll must receive the next ask once the lane opens");
+    assert.notEqual(outcome, first.reqId);
+    await post(`${base}/result`, { reqId: outcome, status: 201, body: "{}" });
+    await next;
+  } finally {
+    relay.close();
+  }
+});
+
+test("relay: the flush timer is re-armed for an earlier deadline", async () => {
+  const relay = await startRelayServer({ port: 0, askSpacingMs: 1000, minGapMs: 100 });
+  const base = `http://127.0.0.1:${relay.port}`;
+  try {
+    const a = relay.request(ASK, { timeoutMs: 5000 });
+    const first = (await poll(`${base}/poll`)) as Delivered;
+    const b = relay.request(ASK, { timeoutMs: 5000 });
+    const bDropped = assert.rejects(b); // never delivered here; dropped by close()
+    const parked = poll(`${base}/poll`);
+    await post(`${base}/result`, { reqId: first.reqId, status: 201, body: "{}" });
+    await a;
+    // Let the gap elapse so the only armed timer is B's spacing deadline (~1 s out).
+    await new Promise((r) => setTimeout(r, 150));
+    const r1 = relay.request(READ, { timeoutMs: 5000 });
+    const read1 = (await parked) as Delivered;
+    assert.equal(read1.req.path, "/api/auth/me");
+    const repoll = poll(`${base}/poll`); // parks inside the gap after read1
+    const t0 = Date.now();
+    const r2 = relay.request(READ, { timeoutMs: 5000 });
+    const outcome = await raceHeld(repoll.then((d) => d as Delivered), 500);
+    assert.notEqual(outcome, "held", "read must land after the gap, not after the ask spacing");
+    const read2 = outcome as Delivered;
+    assert.equal(read2.req.path, "/api/auth/me");
+    assert.ok(Date.now() - t0 < 500);
+    await post(`${base}/result`, { reqId: read1.reqId, status: 200, body: "{}" });
+    await post(`${base}/result`, { reqId: read2.reqId, status: 200, body: "{}" });
+    await r1;
+    await r2;
+    relay.close();
+    await bDropped;
   } finally {
     relay.close();
   }

@@ -34,7 +34,10 @@ function getRelayHeaders(): Promise<Record<string, string>> {
         capability = `extension-v2:${crypto.randomUUID()}`;
         await chrome.storage.local.set({ [RELAY_CLIENT_KEY]: capability });
       }
-      return { "x-openevidence-relay-client": capability };
+      return {
+        "x-openevidence-relay-client": capability,
+        "x-openevidence-relay-extension": chrome.runtime.getManifest().version,
+      };
     })();
     relayHeadersPromise = created;
     void created.catch(() => {
@@ -93,18 +96,29 @@ interface ActivityEvent {
 
 // ---- toolbar badge ------------------------------------------------------------
 
-type BadgeState = "off" | "ok" | "busy" | "err";
+type BadgeState = "off" | "ok" | "busy" | "err" | "rejected";
 
 // A one-glance connection light on the toolbar icon, so you don't have to open
 // the status page to know the relay is alive. Green = connected & idle, blue =
-// a request is in flight, grey = relay not reachable.
-function setBadge(state: BadgeState): void {
-  const color = { off: "#9ca3af", ok: "#16a34a", busy: "#2563eb", err: "#dc2626" }[state];
+// a request is in flight, grey = relay not reachable, orange = the relay is up
+// but refuses our polls (stale worker / lease taken) — NOT the same as "down".
+function setBadge(state: BadgeState, detail?: string): void {
+  const color = {
+    off: "#9ca3af",
+    ok: "#16a34a",
+    busy: "#2563eb",
+    err: "#dc2626",
+    rejected: "#ea580c",
+  }[state];
   const title = {
     off: "OpenEvidence MCP Relay — relay not reachable",
     ok: "OpenEvidence MCP Relay — connected",
     busy: "OpenEvidence MCP Relay — request in flight",
     err: "OpenEvidence MCP Relay — last request failed",
+    rejected:
+      "OpenEvidence MCP Relay — relay rejected this extension" +
+      (detail ? `: ${detail}` : "") +
+      " — if you rebuilt it, click Reload in brave://extensions",
   }[state];
   try {
     void chrome.action.setBadgeText({ text: "●" });
@@ -177,6 +191,31 @@ function activityDone(reqId: string, status: number, ms: number): void {
         return;
       }
     }
+  });
+}
+
+// One collapsed row per rejection reason so the status page shows "the relay
+// refuses us" instead of nothing at all.
+function activityRejected(message: string): void {
+  const key = `REJECTED ${message}`;
+  writeActivity((log) => {
+    const last = log[log.length - 1];
+    if (last && last.key === key) {
+      last.count = (last.count ?? 1) + 1;
+      last.t = Date.now();
+      return;
+    }
+    log.push({
+      reqId: "",
+      key,
+      t: Date.now(),
+      phase: "done",
+      icon: "⛔",
+      label: `Relay rejected us: ${message}`,
+      count: 1,
+      ok: false,
+    });
+    while (log.length > ACTIVITY_MAX) log.shift();
   });
 }
 
@@ -447,6 +486,18 @@ async function handleRequest(reqId: string, req: RelayRequest): Promise<void> {
   }
 }
 
+// A 403/409 from /poll: the daemon is UP but refuses this worker (unknown
+// capability, stale build, or another install holds the lease). Distinct from
+// a network failure so the badge can say so instead of "not reachable".
+class RelayRejectedError extends Error {
+  constructor(
+    public readonly status: number,
+    detail: string,
+  ) {
+    super(`relay poll rejected (${status}): ${detail}`);
+  }
+}
+
 async function pollOnce(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 35_000);
@@ -463,7 +514,7 @@ async function pollOnce(): Promise<void> {
     }
     if (res.status === 204) return;
     const detail = await res.text().catch(() => "");
-    throw new Error(`relay poll rejected (${res.status}): ${detail.slice(0, 200)}`);
+    throw new RelayRejectedError(res.status, detail.slice(0, 200));
   } finally {
     clearTimeout(timer);
   }
@@ -480,9 +531,15 @@ async function pollLoop(): Promise<void> {
         // both mean the relay is reachable. Reflect "connected & idle" unless a
         // request is mid-flight (handleRequest owns the badge then).
         if (inFlight === 0) setBadge("ok");
-      } catch {
-        setBadge("off"); // relay daemon unreachable
-        await new Promise((r) => setTimeout(r, 2000)); // relay not up yet / transient
+      } catch (e) {
+        if (e instanceof RelayRejectedError) {
+          setBadge("rejected", e.message);
+          activityRejected(e.message);
+          await new Promise((r) => setTimeout(r, 5000)); // rejected: back off harder than "not up yet"
+        } else {
+          setBadge("off"); // relay daemon unreachable
+          await new Promise((r) => setTimeout(r, 2000)); // relay not up yet / transient
+        }
       }
     }
   } finally {

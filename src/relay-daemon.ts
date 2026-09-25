@@ -24,11 +24,15 @@ import { RELAY_VERSION, startRelayServer, type RelayServer } from "./relay-serve
 
 const WATCHDOG_INTERVAL_MS = 30_000;
 
-function idleTtlMs(): number {
-  const raw = process.env.OE_MCP_RELAY_IDLE_TTL_MS;
-  if (raw === undefined) return 600_000; // 10 min: long enough to survive a tab reload
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
   const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : 600_000;
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function idleTtlMs(): number {
+  return envMs("OE_MCP_RELAY_IDLE_TTL_MS", 600_000); // 10 min: long enough to survive a tab reload
 }
 
 /** Pid recorded in the pidfile and whether it refers to a live *other* process. */
@@ -56,11 +60,18 @@ async function main(): Promise<void> {
   const config = resolveConfig();
   ensureConfigDirs(config);
 
+  // Cross-session pacing lives here, not in each MCP server: the daemon is the
+  // only process that sees every session's traffic through the one tab.
+  const askSpacingMs = envMs("OE_MCP_ASK_MIN_INTERVAL_MS", 1000);
+  const minGapMs = envMs("OE_MCP_RELAY_MIN_GAP_MS", 250);
+
   let server: RelayServer;
   try {
     server = await startRelayServer({
       port: config.relayPort,
       logger: (m) => console.error(`[relay-daemon] ${m}`),
+      askSpacingMs,
+      minGapMs,
     });
   } catch (err) {
     // Lost the bind race (EADDRINUSE) — another daemon already owns the port.
@@ -74,7 +85,8 @@ async function main(): Promise<void> {
     console.error(`[relay-daemon] could not write pidfile: ${String(err)}`);
   }
   console.error(
-    `[relay-daemon] listening on :${config.relayPort} v${RELAY_VERSION} pid ${process.pid}`,
+    `[relay-daemon] listening on :${config.relayPort} v${RELAY_VERSION} pid ${process.pid} ` +
+      `askSpacing=${askSpacingMs}ms gap=${minGapMs}ms`,
   );
 
   let shuttingDown = false;

@@ -208,7 +208,7 @@ Two health checks, two speeds:
 
 - The relay listens on **localhost only** (`127.0.0.1:8787`) — nothing is exposed to the network.
 - The extension and server store **no OpenEvidence credentials**. The extension stores only a random local relay capability; your OpenEvidence session stays in the browser.
-- Ordinary web pages cannot use the relay: extension endpoints require an extension Origin plus a random per-install capability, CORS never uses a wildcard, and the daemon accepts only the exact OpenEvidence routes/methods used by this project.
+- Ordinary web pages cannot use the relay: the extension endpoints (`/poll`, `/result`) require a random per-install capability header (`x-openevidence-relay-client`). Chromium omits `Origin` on host-permitted extension fetches, so a missing `Origin` is accepted, but any `Origin` that is present must be a `chrome-extension://` one — ordinary web pages always send their Origin and are rejected. CORS never uses a wildcard, and the daemon accepts only the exact OpenEvidence routes/methods used by this project.
 - The daemon leases itself to one extension installation at a time, so different browser profiles/accounts are never silently pooled. A stopped installation's lease expires automatically once no request is pending.
 - Same-user local processes are inside the localhost trust boundary and can call the daemon-facing `/relay` endpoint; do not run untrusted software under your OS account.
 - This repository contains **connector code only** — no OpenEvidence content, datasets, cookies, or account material.
@@ -350,11 +350,12 @@ Run `make help` for the grouped, always-current list.
 | `OE_MCP_RELAY_PORT`        | `8787`                                                                     | Relay port (must match the extension)             |
 | `OE_MCP_RELAY_PID_PATH`    | `~/.openevidence-mcp/relay.pid`                                           | Relay daemon pidfile                              |
 | `OE_MCP_RELAY_LOG_PATH`    | `~/.openevidence-mcp/relay.log`                                           | Relay daemon log file                             |
+| `OE_MCP_RELAY_MIN_GAP_MS`  | `250`                                                                     | Minimum gap between any two requests the daemon hands to the browser tab, across all sessions |
 | `OE_MCP_BASE_URL`          | `https://www.openevidence.com`                                            | OpenEvidence base URL                             |
 | `OE_MCP_ARTIFACT_DIR`      | OS temp dir + `openevidence-mcp`                                          | Artifact output directory                         |
 | `OE_MCP_CROSSREF_MAILTO`   | unset                                                                     | Optional Crossref polite-pool email               |
 | `OE_MCP_CROSSREF_VALIDATE` | `1`                                                                       | Set `0` to skip Crossref validation               |
-| `OE_MCP_ASK_MIN_INTERVAL_MS` | `1000`                                                                  | Minimum spacing between questions (`oe_ask`); waits, never errors; `0` disables |
+| `OE_MCP_ASK_MIN_INTERVAL_MS` | `1000`                                                                  | Minimum spacing between questions (`oe_ask`); waits, never errors; `0` disables. Also sets the daemon's ask-lane spacing: one ask in flight, the next dispatched this long after the previous completes |
 | `OE_MCP_POLL_INTERVAL_MS`  | `1200`                                                                    | Poll interval when waiting for an answer          |
 | `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                              |
 | `OE_MCP_COOKIES_PATH`      | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file (legacy/optional path)                |

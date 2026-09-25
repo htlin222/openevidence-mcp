@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Relay paired with no real browser since the v2 hardening.** Chromium omits
+  the `Origin` header on fetches an extension makes to hosts it holds
+  `host_permissions` for, so `relay-server` answered 403 to every live poll and
+  the daemon looked idle forever. A missing `Origin` is now accepted; a present
+  one must still be `chrome-extension://`.
+- `make kill-all` / `make reap` filter `lsof` to the LISTEN socket, so they no
+  longer kill an MCP server that merely holds a client socket to the daemon.
+
+### Added
+- **Rejections are visible.** The daemon counts refused `/poll`/`/result`
+  calls, logs them (once per minute per reason) and reports `rejected`,
+  `lastRejectAt/Path/Reason` and the paired `extensionVersion` on `/health`.
+- `oe_health` and `doctor` share one diagnosis (`down` / `connected` /
+  `stale-extension` / `rejected` / `silent`) and say what to do — e.g. "Reload
+  the extension in brave://extensions" when the browser still runs an older
+  service worker than `extension/dist`.
+- Extension 0.4.1 sends its manifest version, shows an orange "rejected" badge
+  (with the reason) distinct from the grey "relay unreachable" one, and lists
+  rejections on its status page. `make extension` now reminds you to Reload.
+- **Cross-session ask queue in the daemon.** `POST /api/article` is serialized
+  (one in flight, next one `OE_MCP_ASK_MIN_INTERVAL_MS` after the previous
+  completes) and any two deliveries to the tab are at least
+  `OE_MCP_RELAY_MIN_GAP_MS` (250 ms) apart, so several agents cannot burst
+  DataDome through one tab. `/health` exposes `askWaiting` / `askInFlight`;
+  `oe_health` exposes `ask_queue_waiting` / `ask_in_flight`.
+
+### Changed
+- `oe_health.healthy` is now `false` when the browser runs an older extension
+  than `extension/dist` (`diagnosis: stale-extension`), even though asks still
+  work — reload the extension to clear it.
+- Upgrading does not evict a daemon that is already running from an older
+  build (the relay protocol version is unchanged); it idle-reaps within
+  10 minutes, or run `make kill-all`.
+
 ## [0.4.4] - 2026-07-23
 
 ### Changed

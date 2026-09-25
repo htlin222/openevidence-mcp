@@ -3,12 +3,14 @@ import "dotenv/config";
 
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 import { connectSharedRelay, fetchRelayHealth, type RelayClient } from "./relay-client.js";
+import { diagnoseRelay, readExtensionDistVersion } from "./relay-diagnosis.js";
 import { RELAY_VERSION } from "./relay-server.js";
 import { AnswersDb } from "./answers-db.js";
 import { extractCitations, extractFigures, saveArticleArtifacts } from "./citations.js";
@@ -38,6 +40,15 @@ import type { ArticleAccessLevel, OpenEvidenceAskRequest } from "./types.js";
 
 const config = resolveConfig();
 ensureConfigDirs(config);
+
+// This module runs as dist/server.js, so ".." is the repo root.
+const EXTENSION_DIST_MANIFEST = path.resolve(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"extension",
+	"dist",
+	"manifest.json",
+);
 
 // Connect to the shared relay daemon (spawning it if needed). The daemon owns
 // the relay port and outlives every session, so any number of MCP servers can
@@ -182,20 +193,22 @@ server.registerTool(
 			return ok({ healthy: false, relay_enabled: false, port: config.relayPort });
 		}
 		const h = await fetchRelayHealth(config.relayPort);
+		const distVersion = readExtensionDistVersion(EXTENSION_DIST_MANIFEST);
+		const diag = diagnoseRelay(h, { distVersion, now: Date.now() });
 		if (!h) {
 			return ok({
 				healthy: false,
 				relay_enabled: true,
 				port: config.relayPort,
 				daemon: "down",
-				hint: "Relay daemon is not answering on this port. It respawns on the next oe_ask, or run `make doctor` to diagnose.",
+				hint: diag.hint,
 			});
 		}
 		const versionMatch = h.version === RELAY_VERSION;
 		const startedAt = typeof h.startedAt === "number" ? h.startedAt : null;
 		const lastActivityAt = typeof h.lastActivityAt === "number" ? h.lastActivityAt : null;
 		return ok({
-			healthy: h.connected === true && versionMatch,
+			healthy: h.connected === true && versionMatch && diag.state === "connected",
 			relay_enabled: true,
 			port: config.relayPort,
 			daemon: "up",
@@ -208,6 +221,8 @@ server.registerTool(
 			requests_served: h.served,
 			requests_errored: h.errored,
 			requests_pending: h.pending,
+			ask_queue_waiting: typeof h.askWaiting === "number" ? h.askWaiting : null,
+			ask_in_flight: h.askInFlight === true,
 			last_activity: lastActivityAt ? new Date(lastActivityAt).toISOString() : null,
 			asks_last_hour: (() => {
 				try {
@@ -217,9 +232,14 @@ server.registerTool(
 				}
 			})(),
 			ask_min_interval_ms: config.askMinIntervalMs,
-			...(h.connected !== true && {
-				hint: "Daemon is up but the browser extension is not polling — check the extension is loaded and the browser is running.",
-			}),
+			extension_version: typeof h.extensionVersion === "string" ? h.extensionVersion : null,
+			extension_dist_version: distVersion,
+			relay_rejected: typeof h.rejected === "number" ? h.rejected : null,
+			last_reject_reason: typeof h.lastRejectReason === "string" ? h.lastRejectReason : null,
+			last_reject_at:
+				typeof h.lastRejectAt === "number" ? new Date(h.lastRejectAt).toISOString() : null,
+			diagnosis: diag.state,
+			...(diag.hint && { hint: diag.hint }),
 		});
 	},
 );

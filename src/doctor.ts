@@ -9,12 +9,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ensureConfigDirs, resolveConfig, type AppConfig } from "./config.js";
 import { DataDomeChallengeError, OpenEvidenceClient } from "./openevidence-client.js";
+import { fetchRelayHealth } from "./relay-client.js";
+import { diagnoseRelay, readExtensionDistVersion } from "./relay-diagnosis.js";
 import { DEFAULT_BROWSER_FINGERPRINT, loadBrowserFingerprint, type BrowserFingerprint } from "./fingerprint.js";
 
 const DATADOME_COOKIE_NAME = "datadome";
 const OE_DOMAIN = "openevidence.com";
 /** DataDome re-challenges roughly when the token nears expiry; warn ahead of time. */
 const EXPIRY_WARN_DAYS = 14;
+/** ".." from this module (src/ via tsx, or dist/) is the repo root. */
+const EXTENSION_DIST_MANIFEST = fileURLToPath(
+  new URL("../extension/dist/manifest.json", import.meta.url),
+);
 
 export type CheckLevel = "pass" | "warn" | "fail";
 
@@ -473,6 +479,25 @@ function relayDaemonChecks(): DoctorCheck[] {
   ];
 }
 
+/**
+ * Is the browser extension actually paired with the daemon, and if not, why?
+ * A daemon that is down or a browser that is simply not open is a warning;
+ * an extension that polls but is refused, or runs a stale build, is a failure.
+ */
+async function relayExtensionCheck(port: number, manifestPath: string): Promise<DoctorCheck> {
+  const h = await fetchRelayHealth(port);
+  const diag = diagnoseRelay(h, { distVersion: readExtensionDistVersion(manifestPath), now: Date.now() });
+  const level: CheckLevel =
+    diag.state === "connected" ? "pass" : diag.state === "down" || diag.state === "silent" ? "warn" : "fail";
+  const ext = h && typeof h.extensionVersion === "string" ? ` (extension v${h.extensionVersion})` : "";
+  return {
+    level,
+    code: "relay-extension",
+    message: `relay on :${port}: ${diag.state}${ext}`,
+    ...(diag.hint && { hint: diag.hint }),
+  };
+}
+
 async function main(): Promise<void> {
   const offline = process.argv.includes("--offline");
   const asJson = process.argv.includes("--json");
@@ -513,6 +538,7 @@ async function main(): Promise<void> {
   }
 
   checks.push(...relayDaemonChecks());
+  if (!offline) checks.push(await relayExtensionCheck(config.relayPort, EXTENSION_DIST_MANIFEST));
 
   const extensionDistPath = fileURLToPath(
     new URL("../extension/dist/background.js", import.meta.url),

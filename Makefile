@@ -90,6 +90,7 @@ build:
 extension:
 	rm -rf "$(CURDIR)/extension/dist"
 	cd $(CURDIR)/extension && $(NPM) install && OE_MCP_RELAY_PORT="$(RELAY_PORT)" $(NPM) run build
+	@printf '\n\033[1m⚠  Browser still runs the OLD service worker.\033[0m  Open brave://extensions (or chrome://extensions) and click Reload on "OpenEvidence MCP Relay".\n\n'
 
 # Stop every running server/daemon, then build the server fresh from a clean
 # dist/. The everyday "I changed source, give me a clean running build" cycle.
@@ -187,13 +188,13 @@ kill-all:
 	@echo "==> stopping OpenEvidence MCP servers + relay daemon"
 	@if pkill -f "$(CURDIR)/dist/server.js" 2>/dev/null; then echo "  killed MCP server(s)"; else echo "  no MCP server running"; fi
 	@if pkill -f "$(CURDIR)/dist/relay-daemon.js" 2>/dev/null; then echo "  killed relay daemon"; else echo "  no relay daemon running"; fi
-	@pid=$$(lsof -ti tcp:$(RELAY_PORT) 2>/dev/null); if [ -n "$$pid" ]; then kill $$pid 2>/dev/null && echo "  freed port $(RELAY_PORT) (pid $$pid)"; fi
+	@pid=$$(lsof -ti tcp:$(RELAY_PORT) -sTCP:LISTEN 2>/dev/null); if [ -n "$$pid" ]; then kill $$pid 2>/dev/null && echo "  freed port $(RELAY_PORT) (pid $$pid)"; fi
 	@rm -f "$(RELAY_PID)" 2>/dev/null || true
 	@echo "  done. (reconnect /mcp in any open client session to respawn a fresh server)"
 
 reap:
 	@echo "==> reaping orphaned relay daemons (keeping the live one on :$(RELAY_PORT))"
-	@keep=$$(lsof -ti tcp:$(RELAY_PORT) 2>/dev/null | head -1); \
+	@keep=$$(lsof -ti tcp:$(RELAY_PORT) -sTCP:LISTEN 2>/dev/null | head -1); \
 	reaped=0; \
 	for pid in $$(pgrep -f "$(CURDIR)/dist/relay-daemon.js" 2>/dev/null); do \
 	  if [ "$$pid" != "$$keep" ]; then \

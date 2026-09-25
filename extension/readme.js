@@ -54,7 +54,12 @@ function fmtAgo(ms) {
 // One live status line for the green badge: what the relay has done and is doing.
 function liveStats(h) {
   const parts = [];
-  if (h.version != null) parts.push(`relay v${h.version} · pid ${h.pid}`);
+  if (h.version != null) {
+    parts.push(
+      `relay v${h.version} · pid ${h.pid}` +
+        (typeof h.extensionVersion === "string" ? ` · ext v${h.extensionVersion}` : ""),
+    );
+  }
   if (typeof h.startedAt === "number") parts.push(`up ${fmtAgo(Date.now() - h.startedAt)}`);
   if (typeof h.served === "number") {
     parts.push(`${h.served} request${h.served === 1 ? "" : "s"} served`);
@@ -152,16 +157,27 @@ async function check() {
     "Extension not attached",
     "The relay daemon is up, but this extension is not polling it yet.",
   );
-  showDebug([
+  const lines = [
     `GET ${HEALTH}`,
     `-> ok, daemon pid ${h.pid ?? "?"}, version ${h.version ?? "(old build)"} — but connected:false`,
+  ];
+  if (h.lastRejectReason) {
+    lines.push(
+      `-> the relay rejected this extension's last poll: ${h.lastRejectReason} (${h.lastRejectPath ?? "?"})`,
+    );
+    lines.push(
+      "   If you rebuilt the extension, click Reload on brave://extensions — the old service worker is still running.",
+    );
+  }
+  lines.push(
     "",
     "The extension's background worker is not connected. Usually one of:",
     "  • the worker just woke up — wait a few seconds (this page retries automatically)",
     "  • the extension was rebuilt — reload it (chrome://extensions or brave://extensions → ↻)",
     "  • the extension is loaded in ANOTHER browser that is polling a different port",
     "  • an old relay build — restart your MCP session so it spawns a fresh daemon",
-  ]);
+  );
+  showDebug(lines);
   scheduleRetry();
 }
 

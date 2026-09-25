@@ -29,10 +29,13 @@ const MAX_RELAY_TIMEOUT_MS = 10 * 60_000;
  * per-install capability in this non-simple header. The daemon leases itself to
  * the first live installation, preventing other browser profiles from sharing
  * one logical OpenEvidence session. Same-user local processes remain inside the
- * host trust boundary, but cannot impersonate an extension endpoint by omitting
- * Origin.
+ * host trust boundary. Note that Chromium omits the Origin header on fetches an
+ * extension makes to hosts it has host_permissions for, so the capability header
+ * — not the Origin — is what identifies an installation.
  */
 export const RELAY_EXTENSION_HEADER = "x-openevidence-relay-client";
+/** Optional: the extension's manifest version, surfaced on /health for diagnosis. */
+export const RELAY_EXTENSION_VERSION_HEADER = "x-openevidence-relay-extension";
 /** Deterministic valid capability used only by protocol tests and fake clients. */
 export const RELAY_EXTENSION_HEADER_VALUE =
   "extension-v2:00000000-0000-4000-8000-000000000001";
@@ -104,6 +107,7 @@ interface Waiter {
 interface ExtensionIdentity {
   origin: string;
   clientId: string;
+  version: string | null;
   leaseId: string;
 }
 
@@ -123,18 +127,41 @@ export interface RelayServerOptions {
   host?: string;
   now?: () => number;
   logger?: (message: string) => void;
+  /**
+   * Min spacing between consecutive asks (POST /api/article), measured from the
+   * previous ask's completion. Asks are always serialized (one in flight);
+   * 0 only disables the spacing.
+   */
+  askSpacingMs?: number;
+  /** Min gap between any two deliveries to the extension. 0 = off. */
+  minGapMs?: number;
 }
 
 export function startRelayServer(options: RelayServerOptions): Promise<RelayServer> {
   const host = options.host ?? "127.0.0.1";
   const now = options.now ?? (() => Date.now());
   const log = options.logger ?? (() => {});
+  const askSpacingMs = Math.max(0, options.askSpacingMs ?? 0);
+  const minGapMs = Math.max(0, options.minGapMs ?? 0);
 
   const pending = new Map<string, PendingReq>();
   const outbox: PendingReq[] = [];
   const waiters: Waiter[] = [];
   let lastPollAt = 0;
   let activeExtension: ExtensionIdentity | null = null;
+  // Cross-session scheduling. Every MCP server funnels through this one daemon
+  // and one browser tab, so the daemon is the only place that can see what is
+  // actually in flight: asks (POST /api/article) run one at a time with spacing
+  // measured from the previous ask's completion, and any two deliveries keep a
+  // global minimum gap. Reads are never blocked behind an ask.
+  const isAsk = (r: RelayRequest): boolean =>
+    r.method.toUpperCase() === "POST" && /^\/api\/article\/?$/.test(r.path);
+  let askInFlight: string | null = null; // reqId of the delivered-but-unanswered ask
+  let lastAskAt = 0; // last ask delivery (for /health)
+  let lastAskDoneAt = -Infinity;
+  let lastDeliveredAt = -Infinity;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushTimerAt = Infinity; // absolute time the armed flushTimer fires
   let closed = false;
   // Live stats surfaced on /health so the extension's status page can show what
   // the relay is actually doing, not just that it exists. Additive fields only —
@@ -143,6 +170,21 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   let served = 0;
   let errored = 0;
   let lastActivityAt = 0;
+  // Rejected extension-channel requests (403). A daemon that turns every poll
+  // away otherwise looks merely "disconnected" on /health and in the log.
+  let rejected = 0;
+  let lastReject: { at: number; path: string; reason: string } | null = null;
+  const rejectLoggedAt = new Map<string, number>();
+  const REJECT_LOG_INTERVAL_MS = 60_000;
+
+  // The per-install capability is the identity; the Origin only has to agree
+  // when both sides carry one (the same install may send it on some requests
+  // and omit it on others).
+  const sameInstallation = (
+    a: Omit<ExtensionIdentity, "leaseId">,
+    b: Omit<ExtensionIdentity, "leaseId">,
+  ): boolean =>
+    a.clientId === b.clientId && (a.origin === "" || b.origin === "" || a.origin === b.origin);
 
   const extensionOrigin = (req: IncomingMessage): string | null => {
     const raw = req.headers.origin;
@@ -150,15 +192,24 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     return origin && /^chrome-extension:\/\/[a-p]{32}$/i.test(origin) ? origin : null;
   };
 
+  // Chromium does NOT attach an Origin header to fetches an extension makes to
+  // a host covered by its host_permissions (they arrive with
+  // `sec-fetch-site: none`), so the live extension shows up with the capability
+  // header and no Origin at all. An absent Origin is therefore accepted (as ""),
+  // while any Origin that is present must be a chrome-extension:// one —
+  // ordinary web pages always carry their Origin and are rejected upstream.
   const extensionIdentity = (
     req: IncomingMessage,
   ): Omit<ExtensionIdentity, "leaseId"> | null => {
-    const origin = extensionOrigin(req);
-    if (!origin) return null;
+    const origin = req.headers.origin === undefined ? "" : extensionOrigin(req);
+    if (origin === null) return null;
     const marker = req.headers[RELAY_EXTENSION_HEADER];
     const clientId = Array.isArray(marker) ? marker[0] : marker;
     if (typeof clientId !== "string" || !RELAY_EXTENSION_CAPABILITY.test(clientId)) return null;
-    return { origin, clientId };
+    const rawVersion = req.headers[RELAY_EXTENSION_VERSION_HEADER];
+    const v = Array.isArray(rawVersion) ? rawVersion[0] : rawVersion;
+    const version = typeof v === "string" && /^[0-9A-Za-z.\-]{1,32}$/.test(v) ? v : null;
+    return { origin, clientId, version };
   };
 
   const acceptExtension = (
@@ -167,11 +218,11 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   ): ExtensionIdentity | null => {
     const identity = extensionIdentity(req);
     if (!identity) return null;
-    if (
-      activeExtension &&
-      activeExtension.origin === identity.origin &&
-      activeExtension.clientId === identity.clientId
-    ) {
+    if (activeExtension && sameInstallation(activeExtension, identity)) {
+      // An extension reload keeps the capability but may bump the version.
+      if (identity.version && activeExtension.version !== identity.version) {
+        activeExtension.version = identity.version;
+      }
       return activeExtension;
     }
     const leaseExpired = now() - lastPollAt >= POLL_HOLD_MS + CONNECTED_SLACK_MS;
@@ -190,9 +241,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   };
 
   const isActiveExtension = (identity: Omit<ExtensionIdentity, "leaseId">): boolean =>
-    activeExtension === null ||
-    (activeExtension.origin === identity.origin &&
-      activeExtension.clientId === identity.clientId);
+    activeExtension === null || sameInstallation(activeExtension, identity);
 
   const isExtensionPreflight = (req: IncomingMessage): boolean => {
     const raw = req.headers["access-control-request-headers"];
@@ -217,7 +266,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
     res.setHeader(
       "access-control-allow-headers",
-      `content-type, ${RELAY_EXTENSION_HEADER}`,
+      `content-type, ${RELAY_EXTENSION_HEADER}, ${RELAY_EXTENSION_VERSION_HEADER}`,
     );
   };
 
@@ -232,6 +281,36 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     res.end(JSON.stringify(body));
   };
 
+  // 403 for a request that failed to pair as the extension: count it, remember
+  // it for /health, and log it (once per path+reason per minute, since a stale
+  // extension polls every few seconds). The rate-limit key only distinguishes
+  // the daemon's own routes: an untrusted browser origin is rejected before
+  // routing, so its pathname is attacker-chosen and must not mint new keys.
+  const RELAY_ROUTES = new Set(["/poll", "/result", "/health", "/relay"]);
+  const reject = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+    reason: string,
+  ): void => {
+    const at = now();
+    const path = pathname.slice(0, 128);
+    rejected += 1;
+    lastReject = { at, path, reason };
+    const key = `${RELAY_ROUTES.has(pathname) ? pathname : "<other>"} ${reason}`;
+    const last = rejectLoggedAt.get(key) ?? -Infinity;
+    if (at - last >= REJECT_LOG_INTERVAL_MS) {
+      rejectLoggedAt.set(key, at);
+      const hasOrigin = req.headers.origin !== undefined;
+      const hasCapability = req.headers[RELAY_EXTENSION_HEADER] !== undefined;
+      log(
+        `relay: rejected ${req.method ?? "GET"} ${path} — ${reason} ` +
+          `(origin=${hasOrigin ? "yes" : "no"} capability=${hasCapability ? "yes" : "no"})`,
+      );
+    }
+    sendJson(req, res, 403, { ok: false, error: reason });
+  };
+
   const deliver = (
     req: IncomingMessage,
     res: ServerResponse,
@@ -239,6 +318,11 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     clientId: string,
   ): void => {
     p.clientId = clientId;
+    lastDeliveredAt = now();
+    if (isAsk(p.req)) {
+      askInFlight = p.reqId;
+      lastAskAt = lastDeliveredAt;
+    }
     sendJson(req, res, 200, {
       reqId: p.reqId,
       req: { ...p.req, deadlineAt: p.deadlineAt },
@@ -248,18 +332,69 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
 
   // Deliver queued requests to waiting long-polls, while both exist.
   const flush = (): void => {
-    while (waiters.length > 0 && outbox.length > 0) {
-      const p = outbox.shift();
+    while (waiters.length > 0) {
+      const p = takeEligible();
       if (!p) break;
-      if (!pending.has(p.reqId)) continue; // already timed out
-      const waiter = waiters.shift();
-      if (!waiter) {
-        outbox.unshift(p);
-        break;
-      }
+      const waiter = waiters.shift()!;
       clearTimeout(waiter.timer);
       deliver(waiter.req, waiter.res, p, waiter.clientId);
     }
+  };
+
+  // Re-run flush() once, at the earliest moment something becomes eligible.
+  // One timer at a time, re-armed when an earlier deadline shows up (a read's
+  // gap must not wait behind an ask's spacing). Only armed while a poller is
+  // waiting, so an idle daemon never ticks.
+  const armFlush = (at: number): void => {
+    if (flushTimer !== null) {
+      if (at >= flushTimerAt) return;
+      clearTimeout(flushTimer);
+    }
+    flushTimerAt = at;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flushTimerAt = Infinity;
+      flush();
+    }, Math.max(1, at - now()));
+  };
+
+  // First outbox entry deliverable now (removed from the outbox), else null —
+  // arming the re-flush timer for the earliest eligibility if a poller is held.
+  const takeEligible = (): PendingReq | null => {
+    const t = now();
+    let retryAt: number | null = null;
+    const later = (at: number): void => {
+      retryAt = retryAt === null ? at : Math.min(retryAt, at);
+    };
+    const gapAt = lastDeliveredAt + minGapMs;
+    if (t < gapAt) {
+      if (outbox.some((p) => pending.has(p.reqId))) later(gapAt);
+    } else {
+      for (const p of outbox) {
+        if (!pending.has(p.reqId)) continue; // already timed out
+        if (isAsk(p.req)) {
+          if (askInFlight !== null) continue; // lane busy; reads behind it still flow
+          const readyAt = lastAskDoneAt + askSpacingMs;
+          if (t < readyAt) {
+            later(readyAt);
+            continue;
+          }
+        }
+        outbox.splice(outbox.indexOf(p), 1);
+        return p;
+      }
+    }
+    if (retryAt !== null && waiters.length > 0) armFlush(retryAt);
+    return null;
+  };
+
+  const askFinished = (reqId: string): void => {
+    if (askInFlight !== reqId) return;
+    askInFlight = null;
+    lastAskDoneAt = now();
+    // Lane just opened: a parked poller may take the next ask, or arm the
+    // spacing timer.
+    flush();
   };
 
   const readBody = (req: IncomingMessage): Promise<string> =>
@@ -293,7 +428,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     // A normal web page must never be able to consume requests from /poll,
     // forge /result, or borrow the logged-in OpenEvidence tab via /relay.
     if (hasUntrustedBrowserOrigin(req)) {
-      sendJson(req, res, 403, { ok: false, error: "browser origin not allowed" });
+      reject(req, res, pathname, "browser origin not allowed");
       return;
     }
 
@@ -311,13 +446,12 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     if (method === "GET" && pathname === "/poll") {
       const extension = acceptExtension(req, true);
       if (!extension) {
-        sendJson(req, res, 403, { ok: false, error: "paired extension channel required" });
+        reject(req, res, pathname, "paired extension channel required");
         return;
       }
       lastPollAt = now();
-      const p = outbox.find((x) => pending.has(x.reqId));
+      const p = takeEligible();
       if (p) {
-        outbox.splice(outbox.indexOf(p), 1);
         deliver(req, res, p, extension.clientId);
         return;
       }
@@ -336,6 +470,9 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
         const i = waiters.findIndex((w) => w.res === res);
         if (i >= 0) waiters.splice(i, 1);
       });
+      // Nothing was eligible a moment ago; now that a waiter exists this arms
+      // the re-flush timer for the earliest eligibility (no-op if none).
+      flush();
       return;
     }
 
@@ -360,6 +497,14 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
         errored,
         lastActivityAt,
         leaseId: activeExtension?.leaseId ?? null,
+        rejected,
+        lastRejectAt: lastReject?.at ?? null,
+        lastRejectPath: lastReject?.path ?? null,
+        lastRejectReason: lastReject?.reason ?? null,
+        extensionVersion: activeExtension?.version ?? null,
+        askWaiting: outbox.filter((p) => pending.has(p.reqId) && isAsk(p.req)).length,
+        askInFlight: askInFlight !== null,
+        lastAskAt: lastAskAt || null,
       });
       return;
     }
@@ -429,7 +574,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     if (method === "POST" && pathname === "/result") {
       const extension = acceptExtension(req, false);
       if (!extension) {
-        sendJson(req, res, 403, { ok: false, error: "paired extension channel required" });
+        reject(req, res, pathname, "paired extension channel required");
         return;
       }
       readBody(req)
@@ -447,7 +592,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
             return;
           }
           if (p.clientId !== extension.clientId) {
-            sendJson(req, res, 403, { ok: false, error: "request belongs to another extension" });
+            reject(req, res, pathname, "request belongs to another extension");
             return;
           }
           const validError =
@@ -464,6 +609,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
           if (!validError && !validResponse) {
             clearTimeout(p.timer);
             pending.delete(p.reqId);
+            askFinished(p.reqId);
             errored += 1;
             p.reject(new Error("extension: malformed result payload"));
             sendJson(req, res, 400, { ok: false, error: "malformed result payload" });
@@ -471,6 +617,7 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
           }
           clearTimeout(p.timer);
           pending.delete(p.reqId);
+          askFinished(p.reqId);
           // A completed request is proof that the leased installation is still
           // alive; renew the lease so another profile cannot seize the tiny gap
           // before this extension opens its next long-poll.
@@ -513,6 +660,9 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     return new Promise<RelayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(reqId);
+        // Freeing the lane on timeout relies on the extension honouring
+        // deadlineAt (it aborts the in-tab fetch), so no second ask overlaps.
+        askFinished(reqId);
         const i = outbox.findIndex((x) => x.reqId === reqId);
         if (i >= 0) outbox.splice(i, 1);
         errored += 1;
@@ -541,6 +691,11 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
         close: () => {
           if (closed) return;
           closed = true;
+          if (flushTimer !== null) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+            flushTimerAt = Infinity;
+          }
           for (const w of waiters) {
             clearTimeout(w.timer);
             if (!w.res.writableEnded) {
