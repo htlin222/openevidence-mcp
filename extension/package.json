@@ -11,9 +11,9 @@
 		"dist": "npm run build && (cd dist && zip -qr ../openevidence-mcp-relay-extension.zip .) && npm run pack"
 	},
 	"devDependencies": {
-		"@types/chrome": "^0.1.42",
+		"@types/chrome": "^0.3.7",
 		"crx3": "^2.0.0",
-		"esbuild": "^0.28.0",
-		"typescript": "^5.9.3"
+		"esbuild": "^0.28.2",
+		"typescript": "^7.0.2"
 	}
 }
