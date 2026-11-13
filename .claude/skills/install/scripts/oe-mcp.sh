@@ -64,6 +64,11 @@ cmd_uninstall() {
   make -C "$repo" uninstall
 }
 
+cmd_autostart() {
+  local repo; repo="$(find_repo)" || die "no openevidence-mcp checkout found. Run: $0 install"
+  make -C "$repo" autostart
+}
+
 cmd_status() {
   local repo; repo="$(find_repo)" || die "no openevidence-mcp checkout found. Run: $0 install"
   make -C "$repo" status
@@ -76,6 +81,7 @@ oe-mcp.sh — manage openevidence-mcp
   install     clone (if needed), build server + extension, register into your AI CLIs
   update      git pull latest release, rebuild + re-register  (then reload the extension)
   status      show versions, live relay health, and CLI registration
+  autostart   macOS: keep the relay daemon running across logins/reboots (launchd)
   cleanup     reap orphan relay daemons + prune stale logs/temp  (keeps install + data)
   uninstall   unregister from AI CLIs, stop daemons, remove builds  (keeps ~/.openevidence-mcp)
 
@@ -89,6 +95,7 @@ case "${1:-}" in
   cleanup)   cmd_cleanup ;;
   uninstall) cmd_uninstall ;;
   status)    cmd_status ;;
+  autostart) cmd_autostart ;;
   ""|-h|--help|help) usage ;;
   *) usage; die "unknown command: $1" ;;
 esac

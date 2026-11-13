@@ -19,13 +19,14 @@ back to them — especially the **reload the browser extension** step, which is 
 
 ## Pick the action
 
-| User wants… | Run |
-| --- | --- |
-| First-time setup | `scripts/oe-mcp.sh install` |
-| **Update to the latest release** | `scripts/oe-mcp.sh update` |
-| Check it's working | `scripts/oe-mcp.sh status` |
-| Reap stray daemons / free stale state | `scripts/oe-mcp.sh cleanup` |
-| Remove it | `scripts/oe-mcp.sh uninstall` |
+| User wants…                                            | Run                           |
+| ------------------------------------------------------ | ----------------------------- |
+| First-time setup                                       | `scripts/oe-mcp.sh install`   |
+| **Update to the latest release**                       | `scripts/oe-mcp.sh update`    |
+| Check it's working                                     | `scripts/oe-mcp.sh status`    |
+| Relay should survive reboots / "start at boot" (macOS) | `scripts/oe-mcp.sh autostart` |
+| Reap stray daemons / free stale state                  | `scripts/oe-mcp.sh cleanup`   |
+| Remove it                                              | `scripts/oe-mcp.sh uninstall` |
 
 Invoke the script by its path from the skill directory, e.g.:
 
@@ -46,6 +47,10 @@ If `$CLAUDE_SKILL_DIR` is not set, use the repo path directly:
   extension, re-register. Prints the extension-reload reminder.
 - **status** — `make status`: server + extension versions, live relay `/health`,
   and whether the CLIs have it registered.
+- **autostart** — `make autostart`: installs a launchd LaunchAgent so the relay
+  daemon starts at login, restarts on crash and never idle-reaps. Undo with
+  `make autostart-remove`. The browser (extension + logged-in tab) must still be
+  running — suggest adding it to macOS Login Items.
 - **cleanup** — `make cleanup`: reaps orphan relay daemons (keeps the live one),
   prunes oversized relay logs and temp answer artifacts. **Non-destructive** —
   your install, registration, and `~/.openevidence-mcp` data are untouched. The

@@ -21,10 +21,13 @@ else
 FINGERPRINT_HAR ?= $(CURDIR)/www.openevidence.com.har
 endif
 SERVER := $(CURDIR)/dist/server.js
+AUTOSTART_LABEL := com.htlin.openevidence-mcp.relay
+# Off macOS the script no-ops for --restart/--status/--uninstall and refuses a real install.
+AUTOSTART := bash "$(CURDIR)/scripts/install_relay_launchd.sh"
 VERSION := $(shell $(NODE) -p "require('$(CURDIR)/package.json').version")
 EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').version")
 
-.PHONY: all help deps build extension rebuild reinstall check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all reap clean remove-all update cleanup uninstall status
+.PHONY: all help deps build extension rebuild reinstall check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all reap clean remove-all update cleanup uninstall status autostart autostart-remove
 
 # One command does the whole setup: install deps, build the MCP server
 # (dist/server.js) + the relay extension (extension/dist), and register the
@@ -47,6 +50,8 @@ help:
 	@printf '  make all            one-shot: deps + build server + build extension + register into Claude & Codex,\n'
 	@printf '                      then load the extension (chrome://extensions -> Load unpacked -> extension/dist)\n'
 	@printf '  make kill-all       stop all MCP servers + the relay daemon (free port %s)\n' "$(RELAY_PORT)"
+	@printf '  make autostart      macOS: keep the relay daemon running across logins/reboots/crashes (launchd)\n'
+	@printf '  make autostart-remove   undo that (the daemon is spawned on demand again)\n'
 	@printf '  make reap           garbage-collect orphaned relay daemons (keep the live one on :%s)\n' "$(RELAY_PORT)"
 	@printf '\n\033[1mBuild & verify:\033[0m\n'
 	@printf '  make build [HAR=…]  compile dist/server.js (wipes dist/ first; extracts fingerprint from HAR if given)\n'
@@ -97,12 +102,14 @@ extension:
 rebuild:
 	$(MAKE) kill-all
 	$(MAKE) build
+	@$(AUTOSTART) --restart
 
 # Same as rebuild, then re-register the fresh server into Claude + Codex.
 # Use after changing how the server is launched/registered, not just its code.
 reinstall:
 	$(MAKE) kill-all
 	$(MAKE) extension install-claude-global install-codex-global
+	@$(AUTOSTART) --restart
 
 check:
 	$(NPM) run check
@@ -191,6 +198,7 @@ kill-all:
 	@pid=$$(lsof -ti tcp:$(RELAY_PORT) -sTCP:LISTEN 2>/dev/null); if [ -n "$$pid" ]; then kill $$pid 2>/dev/null && echo "  freed port $(RELAY_PORT) (pid $$pid)"; fi
 	@rm -f "$(RELAY_PID)" 2>/dev/null || true
 	@echo "  done. (reconnect /mcp in any open client session to respawn a fresh server)"
+	@if launchctl print gui/$$(id -u)/$(AUTOSTART_LABEL) >/dev/null 2>&1; then echo "  note: relay autostart is installed — launchd restarts the daemon within ~30s (make autostart-remove to stop it for good)"; fi
 
 reap:
 	@echo "==> reaping orphaned relay daemons (keeping the live one on :$(RELAY_PORT))"
@@ -223,12 +231,22 @@ update:
 	git pull --ff-only
 	$(MAKE) kill-all
 	$(MAKE) deps build extension install-claude-global install-codex-global
+	@$(AUTOSTART) --restart
 	@printf '\n\033[32m✅  Updated — server v%s · extension v%s\033[0m\n' \
 		"$$($(NODE) -p "require('$(CURDIR)/package.json').version")" \
 		"$$($(NODE) -p "require('$(CURDIR)/extension/package.json').version")"
 	@printf '\033[1m👉  Reload the browser extension\033[0m to pick up the new relay build:\n'
 	@printf '      chrome://extensions  →  Reload  on "OpenEvidence MCP Relay"\n'
 	@printf '   then reconnect /mcp in your AI client.\n\n'
+
+# macOS: hand the relay daemon's lifecycle to launchd so it starts at login,
+# survives reboots, and is restarted if it dies. Without this the daemon is
+# spawned on demand and reaps itself after 10 idle minutes.
+autostart: build
+	@$(AUTOSTART)
+
+autostart-remove:
+	@$(AUTOSTART) --uninstall
 
 # Reap orphan daemons, free stale state — WITHOUT unregistering or touching data.
 cleanup:
@@ -243,6 +261,7 @@ cleanup:
 # extension in place — a full wipe is a manual, explicit step (printed below).
 uninstall: remove-all
 	@echo "==> uninstalling openevidence-mcp"
+	-@$(AUTOSTART) --uninstall
 	-$(MAKE) kill-all
 	$(MAKE) clean
 	@printf '[ok] unregistered from AI CLIs, stopped daemons, removed dist/.\n'
@@ -256,5 +275,6 @@ status:
 	@printf 'repo:      %s\n' "$(CURDIR)"
 	@printf 'version:   server v%s  ·  extension v%s\n' "$(VERSION)" "$(EXT_VERSION)"
 	@printf 'relay:     '; curl -s --max-time 2 http://127.0.0.1:$(RELAY_PORT)/health || printf '(not reachable on :%s)' "$(RELAY_PORT)"; printf '\n'
+	@$(AUTOSTART) --status 2>/dev/null || true
 	@command -v $(CLAUDE) >/dev/null 2>&1 && { printf 'claude:    '; $(CLAUDE) mcp list 2>/dev/null | grep -qi $(MCP_NAME) && printf 'registered\n' || printf 'not registered\n'; } || true
 	@command -v $(CODEX) >/dev/null 2>&1 && { printf 'codex:     '; $(CODEX) mcp list 2>/dev/null | grep -qi $(MCP_NAME) && printf 'registered\n' || printf 'not registered\n'; } || true

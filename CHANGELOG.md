@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+
+- **`doctor` / `smoke` failed a healthy relay setup.** Both probed the legacy
+  cookie path even in relay-all mode, so stale `cookies.json` reported "Login
+  session is not active (204)" while asks worked. They now probe the transport
+  the server uses (`attachConnectedRelay` — observe-only, never spawns a
+  daemon) and say which one (`live probe via relay`, `"transport": "relay"`).
+- **Status page blamed the relay for a stale service worker.** When the page
+  cannot message its own background worker ("Receiving end does not exist") it
+  now says "Extension needs a reload" with the fix, instead of "no relay
+  daemon is running".
 - **Relay paired with no real browser since the v2 hardening.** Chromium omits
   the `Origin` header on fetches an extension makes to hosts it holds
   `host_permissions` for, so `relay-server` answered 403 to every live poll and
@@ -16,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer kill an MCP server that merely holds a client socket to the daemon.
 
 ### Added
+
+- **`make autostart` (macOS).** `scripts/install_relay_launchd.sh` installs a
+  LaunchAgent that starts the relay daemon at login, restarts it on crash and
+  disables idle reaping, so the relay survives reboots. `make status` reports
+  it, `make update`/`rebuild`/`reinstall` restart it onto the new build, and
+  `make uninstall` removes it.
 - **Rejections are visible.** The daemon counts refused `/poll`/`/result`
   calls, logs them (once per minute per reason) and reports `rejected`,
   `lastRejectAt/Path/Reason` and the paired `extensionVersion` on `/health`.
@@ -34,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `oe_health` exposes `ask_queue_waiting` / `ask_in_flight`.
 
 ### Changed
+
 - `oe_health.healthy` is now `false` when the browser runs an older extension
   than `extension/dist` (`diagnosis: stale-extension`), even though asks still
   work — reload the extension to clear it.
@@ -44,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.4.4] - 2026-07-23
 
 ### Changed
+
 - **Maintenance release — publishes the accumulated 0.4.x work to npm.** No
   functional changes over 0.4.3; the npm registry had lagged at 0.2.1, so this
   bump ships the current server (including `oe_article_set_access`, the
@@ -53,6 +71,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.4.3] - 2026-07-13
 
 ### Added
+
 - **`oe_article_set_access` — toggle a conversation's share visibility.**
   `public:true` makes a conversation link-shareable (`ANYONE_WITH_LINK` —
   anyone with the `/ask/<id>` URL can read it, no login); `public:false`
@@ -67,6 +86,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.4.2] - 2026-07-13
 
 ### Changed
+
 - **`oe_ask` now submits a payload byte-identical to the official frontend.**
   A live CDP capture (2026-07-13) of the site's `POST /api/article` showed
   three drifts, all fixed in `buildAskBody`: the request now carries
@@ -82,9 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.4.1] - 2026-07-12
 
 ### Added
+
 - **Question pacing to respect the per-account hourly ask limit.** Only `oe_ask`
   (a new question or a follow-up) spends OpenEvidence's question budget; every
-  other tool is free of it. `oe_ask` now paces submissions — it *waits* (never
+  other tool is free of it. `oe_ask` now paces submissions — it _waits_ (never
   errors) so consecutive asks are at least `OE_MCP_ASK_MIN_INTERVAL_MS` apart
   (default 1000 ms ≈ 1 question/second), coordinated across all MCP sessions via
   a shared `ask_log` table in the SQLite store so multiple windows can't
@@ -108,6 +129,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.4.0] - 2026-07-12
 
 ### Added
+
 - **Follow-up questions surfaced + threaded conversations.** `oe_ask` and
   `oe_article_get` now return **`follow_up_questions`** — the suggestions
   OpenEvidence renders under an answer (from
@@ -140,6 +162,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no new dependency). Writes are best-effort — a store failure never fails a
   tool call. New module `src/answers-db.ts`; keyed `(account, article_id)` on
   the login email so it joins the Python CLI's tables cleanly.
+
 - **`oe_health` — millisecond-fast relay pipeline check.** Reads the relay
   daemon's `/health` locally (no OpenEvidence network call, unlike
   `oe_auth_status`) and reports whether the daemon is up, whether the browser
@@ -184,6 +207,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (default `~/.openevidence-mcp/relay.pid` / `relay.log`).
 
 ### Changed
+
 - **`oe_ask` is fire-and-forget by default.** It now returns
   `{article_id, status:"pending"}` immediately and frees the browser tab for other
   sessions; fetch the finished answer with `oe_article_get(article_id)` (which gained
@@ -203,6 +227,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   creator/account mismatch between a browser tab and `cookies.json`).
 
 ### Changed
+
 - **Extension status page gains a live activity feed, and the toolbar icon a
   connection light (extension 0.3.0).** The how-it-works/status page now shows a
   vivid, live feed of what the relay is doing — "🔍 Asked a question", "📄
@@ -234,6 +259,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bumped to 0.2.0 — **reload the unpacked extension** to pick this up.
 
 ### Fixed
+
 - **Extension no longer piles up pinned OpenEvidence tabs across browser
   restarts.** `chrome.storage.session` is wiped on restart but Chrome restores
   pinned tabs, so the relay's parked tab came back untracked and `ensureOeTab`
@@ -247,6 +273,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.3.0] - 2026-06-04
 
 ### Added
+
 - Browser-extension relay (Brave/Chrome): `oe_ask` submits the `POST /api/article`
   inside your own real logged-in OpenEvidence tab over a localhost relay, so the
   request carries your genuine browser session. Standalone `extension/` sub-project,
@@ -258,18 +285,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (schema v2) with collections auto-sort tools and routine.
 
 ### Changed
+
 - **BREAKING:** `oe_ask` is now extension-relay-only. The direct Node `POST
-  /api/article` is deprecated and no longer attempted; without a connected relay,
+/api/article` is deprecated and no longer attempted; without a connected relay,
   `oe_ask` fails fast with install guidance. Reads (`oe_history_list`,
   `oe_article_get`, collections) are unchanged.
 
 ### Removed
+
 - **BREAKING:** the open-url `via_browser` ask path (`src/ask-browser.ts`,
   `via_browser*` flags), `OE_MCP_BROWSER_FALLBACK`, and `OE_MCP_BROWSER_APP`.
 
 ## [0.2.0] - 2026-05-09
 
 ### Changed
+
 - Replaced Playwright-backed browser login with browser-exported `cookies.json` auth.
 - Added Makefile targets for build, smoke testing, and user-scope Claude Code MCP install.
 - Saved completed article artifacts to disk with citation extraction, BibTeX export, and Crossref validation.
@@ -277,6 +307,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.1.0] - 2026-02-21
 
 ### Added
+
 - MCP server with stdio transport (MCP SDK 1.26.0)
 - `oe_auth_status` tool - validate session via `/api/auth/me`
 - `oe_history_list` tool - read conversation history via `/api/article/list`

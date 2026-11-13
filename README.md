@@ -50,7 +50,7 @@ make all      # installs deps · builds the MCP server + relay extension ·
 Then the one manual step `make all` prints (a browser action that can't be scripted):
 
 1. **Load the extension** — open `chrome://extensions` (Chrome / Edge / Brave / Arc / Vivaldi / Opera) → turn on **Developer mode** → **Load unpacked** → select `extension/dist`.
-2. **Stay logged in to [openevidence.com](https://www.openevidence.com)** in that browser, and keep a tab open. That login *is* your authentication.
+2. **Stay logged in to [openevidence.com](https://www.openevidence.com)** in that browser, and keep a tab open. That login _is_ your authentication.
 3. **Run your AI tool.** The server auto-starts the relay and connects to the extension.
 
 Verify and go:
@@ -59,7 +59,7 @@ Verify and go:
 curl -s http://127.0.0.1:8787/health     # expect {"ok":true,"connected":true,"version":1,...}
 ```
 
-Then just ask, in any MCP client: *“Use OpenEvidence to answer …”*. Re-run `make all` anytime to rebuild + re-register; `make help` lists every target; `make kill-all` stops all servers + the relay daemon.
+Then just ask, in any MCP client: _“Use OpenEvidence to answer …”_. Re-run `make all` anytime to rebuild + re-register; `make help` lists every target; `make kill-all` stops all servers + the relay daemon.
 
 **Already installed? Update in one line:**
 
@@ -67,7 +67,7 @@ Then just ask, in any MCP client: *“Use OpenEvidence to answer …”*. Re-run
 make update    # git pull latest release · rebuild server + extension · re-register
 ```
 
-Then **reload the browser extension** (`chrome://extensions` → Reload) and reconnect `/mcp`. `make status` shows versions + live health; `make uninstall` removes it. (Inside an AI session you can also just say *“update openevidence-mcp”* — the bundled **install skill** runs the right step and reminds you to reload the extension.)
+Then **reload the browser extension** (`chrome://extensions` → Reload) and reconnect `/mcp`. `make status` shows versions + live health; `make uninstall` removes it. (Inside an AI session you can also just say _“update openevidence-mcp”_ — the bundled **install skill** runs the right step and reminds you to reload the extension.)
 
 > Clicking the extension's toolbar icon opens a built-in **how-it-works page** with a live connection check.
 
@@ -112,7 +112,7 @@ A completed article returns the OpenEvidence payload and `status`, the `article_
 ### Question pacing — stay under your hourly ask limit
 
 OpenEvidence caps how many **questions** you can ask per account over time. Only
-`oe_ask` spends that budget — a new question *and* every follow-up is one ask.
+`oe_ask` spends that budget — a new question _and_ every follow-up is one ask.
 Everything else (`oe_article_get`, `oe_answers_search`, `oe_history_list`,
 `oe_public_get`, `oe_auth_status`, `oe_health`, collections) is free of it.
 
@@ -130,11 +130,10 @@ answer and `oe_article_get` serves it from cache — both cost zero questions.
 
 ### Follow-up questions — continue the same conversation
 
-Every completed answer carries **`follow_up_questions`** — the suggestions OpenEvidence renders under the answer (e.g. *"How does adjuvant therapy choice differ in elderly patients?"*). To ask any of them (or your own) **in the same conversation thread**, call `oe_ask` with `original_article_id` set to the answer's `article_id`:
+Every completed answer carries **`follow_up_questions`** — the suggestions OpenEvidence renders under the answer (e.g. _"How does adjuvant therapy choice differ in elderly patients?"_). To ask any of them (or your own) **in the same conversation thread**, call `oe_ask` with `original_article_id` set to the answer's `article_id`:
 
 ```jsonc
 // first answer → { article_id: "b752a1c1-…", follow_up_questions: ["How does adjuvant therapy choice differ in elderly patients?", …] }
-
 // oe_ask({ question: "How does adjuvant therapy choice differ in elderly patients?",
 //          original_article_id: "b752a1c1-…" })
 // → a new article that threads on the prior turn — the answer opens
@@ -168,7 +167,7 @@ Every completed answer from `oe_ask` / `oe_article_get` is upserted into a local
 
 - **Cache hits on `oe_article_get`** — fetching an article you've already stored returns instantly from disk with `from_cache: true` and **zero network round-trips** (it doesn't even touch the relay). Pass `refresh: true` to force a re-fetch from OpenEvidence and regenerate the on-disk citation artifacts.
 
-This store persists across reboots (unlike the citation artifacts under the OS temp dir), and only ever holds answers *this MCP fetched*. For your complete server-side history, use `oe_history_list` or the collections sync. Point it elsewhere with `OE_MCP_DB_PATH`; it needs Node ≥ 22 for the built-in `node:sqlite` (no extra dependency).
+This store persists across reboots (unlike the citation artifacts under the OS temp dir), and only ever holds answers _this MCP fetched_. For your complete server-side history, use `oe_history_list` or the collections sync. Point it elsewhere with `OE_MCP_DB_PATH`; it needs Node ≥ 22 for the built-in `node:sqlite` (no extra dependency).
 
 ### Is the pipeline up? `oe_health` vs `oe_auth_status`
 
@@ -179,27 +178,27 @@ Two health checks, two speeds:
 
 ## Tools
 
-| Tool                          | Purpose                                                                                                                     |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block; `original_article_id` to follow up in the same thread |
-| `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); returns `follow_up_questions`; saves artifacts; `wait_for_completion` to block until ready |
-| `oe_public_get`               | Read a conversation page from an `/ask/<id>` link as Q&A markdown turns — public links need zero setup; private ones use the relay tab or `cookies.json` |
+| Tool                          | Purpose                                                                                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block; `original_article_id` to follow up in the same thread                                 |
+| `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); returns `follow_up_questions`; saves artifacts; `wait_for_completion` to block until ready                                     |
+| `oe_public_get`               | Read a conversation page from an `/ask/<id>` link as Q&A markdown turns — public links need zero setup; private ones use the relay tab or `cookies.json`                                                 |
 | `oe_article_set_access`       | Toggle a conversation's share visibility — `public:true` → link-shareable (`ANYONE_WITH_LINK`), `public:false` → private (`CREATOR_ONLY`); returns the `/ask/<id>` URL (you must own it; relay required) |
-| `oe_answers_search`           | Full-text search (SQLite FTS5) over every answer this MCP has fetched — offline, zero rate-limit cost; returns highlighted snippets |
-| `oe_health`                   | Millisecond-fast local check of the relay pipeline (daemon + extension) — no network call, unlike `oe_auth_status`          |
-| `oe_auth_status`              | Check `/api/auth/me` through the relay (full network round-trip)                                                             |
-| `oe_history_list`             | Read your OpenEvidence question history                                                                                      |
-| `oe_collections_list`         | List your collections                                                                                                       |
-| `oe_collections_get`          | Get a collection (incl. nested `questions[]` = membership list)                                                              |
-| `oe_collections_create`       | Create a collection (agent-managed names should start with `#`)                                                              |
-| `oe_collections_add_article`  | Add a chat to a collection                                                                                                   |
-| `oe_collections_db_init`      | Create the local SQLite mirror (idempotent)                                                                                  |
-| `oe_collections_sync_history` | Pull `/api/article/list` into the local SQLite chats table                                                                   |
-| `oe_collections_sync_db`      | Refresh collections + memberships into SQLite                                                                                |
-| `oe_collections_unsorted`     | Chats with no `#`-collection membership; structured JSON                                                                     |
-| `oe_collections_summary`      | Counts + last sync timestamps                                                                                                |
-| `oe_collections_classify`     | Auto-classify unsorted chats using log-odds-ratio signatures learned from your memberships + curated keyword rules           |
-| `oe_collections_bulk_apply`   | Mint missing `#`-collections + add memberships per `[{article_id, hashtags}]` plan                                           |
+| `oe_answers_search`           | Full-text search (SQLite FTS5) over every answer this MCP has fetched — offline, zero rate-limit cost; returns highlighted snippets                                                                      |
+| `oe_health`                   | Millisecond-fast local check of the relay pipeline (daemon + extension) — no network call, unlike `oe_auth_status`                                                                                       |
+| `oe_auth_status`              | Check `/api/auth/me` through the relay (full network round-trip)                                                                                                                                         |
+| `oe_history_list`             | Read your OpenEvidence question history                                                                                                                                                                  |
+| `oe_collections_list`         | List your collections                                                                                                                                                                                    |
+| `oe_collections_get`          | Get a collection (incl. nested `questions[]` = membership list)                                                                                                                                          |
+| `oe_collections_create`       | Create a collection (agent-managed names should start with `#`)                                                                                                                                          |
+| `oe_collections_add_article`  | Add a chat to a collection                                                                                                                                                                               |
+| `oe_collections_db_init`      | Create the local SQLite mirror (idempotent)                                                                                                                                                              |
+| `oe_collections_sync_history` | Pull `/api/article/list` into the local SQLite chats table                                                                                                                                               |
+| `oe_collections_sync_db`      | Refresh collections + memberships into SQLite                                                                                                                                                            |
+| `oe_collections_unsorted`     | Chats with no `#`-collection membership; structured JSON                                                                                                                                                 |
+| `oe_collections_summary`      | Counts + last sync timestamps                                                                                                                                                                            |
+| `oe_collections_classify`     | Auto-classify unsorted chats using log-odds-ratio signatures learned from your memberships + curated keyword rules                                                                                       |
+| `oe_collections_bulk_apply`   | Mint missing `#`-collections + add memberships per `[{article_id, hashtags}]` plan                                                                                                                       |
 
 ## Privacy & security
 
@@ -210,12 +209,26 @@ Two health checks, two speeds:
 - Same-user local processes are inside the localhost trust boundary and can call the daemon-facing `/relay` endpoint; do not run untrusted software under your OS account.
 - This repository contains **connector code only** — no OpenEvidence content, datasets, cookies, or account material.
 
+### Keep the relay running across reboots (macOS)
+
+By default the daemon is spawned by the first MCP call and reaps itself after 10 idle minutes, so between sessions the extension's status page shows "Relay not reachable". To make it permanent, hand its lifecycle to launchd:
+
+```bash
+make autostart          # start at login, restart on crash, never idle-reap
+make status             # shows `autostart: installed (… pid N)`
+make autostart-remove   # back to on-demand
+```
+
+This installs `~/Library/LaunchAgents/com.htlin.openevidence-mcp.relay.plist` (log: `~/.openevidence-mcp/relay-launchd.log`). `make update` / `rebuild` / `reinstall` restart the daemon onto the fresh build, and `make uninstall` removes the agent. The browser still has to be running with the extension loaded and a logged-in openevidence.com tab — add your browser to **System Settings → General → Login Items** for a fully hands-off boot. On other systems run `npm run relay` under your own service manager with `OE_MCP_RELAY_IDLE_TTL_MS=0`.
+
 ## Troubleshooting
+
+- **Status page says “Extension needs a reload”?** The page could not reach the extension's own background worker — the browser still runs the old service worker after a rebuild/update. Click **Reload** on the extension in `chrome://extensions`; the relay itself is fine.
 
 - **Extension badge not green / `connected:false`?** Make sure you're logged in to openevidence.com in that browser with a tab open, then reload the extension (`chrome://extensions` → ↻).
 - **Tools fail with “relay not connected”?** Start your AI tool / MCP server so the daemon comes up, then `curl -s http://127.0.0.1:8787/health`. If a previous build is stuck, `make kill-all` and reconnect the MCP server.
 - **Extension says “paired channel required”?** Another browser profile currently owns the relay lease. Stop that extension, wait about 35 seconds with no pending request, then retry from the intended profile.
-- **DataDome 403 on the legacy cookie path?** See [Doctor](#doctor-legacy-cookie-path) below — relevant only when `OE_MCP_RELAY_TRANSPORT=off`.
+- **DataDome 403 on the legacy cookie path?** See [Doctor](#doctor) below — relevant only when `OE_MCP_RELAY_TRANSPORT=off`.
 
 ## Register with MCP clients
 
@@ -306,9 +319,11 @@ npm run login && npm run smoke
 
 `make build` extracts `openevidence-fingerprint.json` from the HAR when present. The fingerprint is **profile-faithful** — the client sends exactly the captured browser's header set, so a HAR from any browser (incl. Safari) stays coherent with the cookie that browser minted.
 
-### Doctor (legacy cookie path)
+### Doctor
 
-When the cookie path fails with a DataDome 403 — most often **after moving to a different computer** — run the doctor:
+`npm run doctor` audits the whole pipeline: relay daemon, extension pairing/version, port sync, and a live read. The live probe goes through **the transport the server actually uses** — the relay when it is connected (`mode: … live probe via relay`), the cookie path only with `OE_MCP_RELAY_TRANSPORT=off` — so stale cookies no longer fail a healthy relay setup. `npm run smoke` follows the same rule and reports its `transport`.
+
+The cookie/fingerprint checks matter when the cookie path fails with a DataDome 403 — most often **after moving to a different computer**:
 
 ```bash
 npm run doctor              # static checks + a live read probe
@@ -322,44 +337,45 @@ It flags `datadome-missing` / `-expired` / `-session` (cookie absent / past expi
 
 Run `make help` for the grouped, always-current list.
 
-| Target                                              | Purpose                                                                                                                     |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `make all` (or bare `make`)                         | **One-shot setup:** deps + build server + build extension + register into Claude & Codex (skips a CLI that isn't installed)  |
-| `make update`                                       | **Update to the latest release:** `git pull` + rebuild + re-register (then reload the extension)                            |
-| `make status`                                       | Versions, live relay `/health`, and CLI registration at a glance                                                            |
-| `make cleanup`                                      | Reap orphan relay daemons + prune stale logs/temp — non-destructive (relay respawns on next use)                            |
-| `make uninstall`                                    | Unregister from the CLIs, stop daemons, remove `dist/` (keeps `~/.openevidence-mcp` + the browser extension)                |
-| `make help`                                         | Grouped reference of every target                                                                                           |
-| `make kill-all`                                     | Stop all MCP servers + the relay daemon and free port 8787                                                                  |
-| `make relay`                                        | Run the standalone relay daemon in the foreground (debug)                                                                   |
-| `make deps` / `check` / `test` / `smoke`            | Force install · type-check · unit tests · auth+history smoke (cookie path)                                                  |
-| `make build [HAR=…]`                                | Extract the fingerprint if a HAR is given, then compile TypeScript                                                          |
-| `make fingerprint HAR=…`                            | Extract the working browser fingerprint from a HAR                                                                          |
-| `make import-cookies COOKIES=…`                     | Import and verify cookies                                                                                                   |
-| `make install-claude-global` / `-codex-global` / `-agy-global` / `install-all` | Register the server with the respective CLI(s)                                                  |
+| Target                                                                         | Purpose                                                                                                                     |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `make all` (or bare `make`)                                                    | **One-shot setup:** deps + build server + build extension + register into Claude & Codex (skips a CLI that isn't installed) |
+| `make update`                                                                  | **Update to the latest release:** `git pull` + rebuild + re-register (then reload the extension)                            |
+| `make status`                                                                  | Versions, live relay `/health`, and CLI registration at a glance                                                            |
+| `make cleanup`                                                                 | Reap orphan relay daemons + prune stale logs/temp — non-destructive (relay respawns on next use)                            |
+| `make uninstall`                                                               | Unregister from the CLIs, stop daemons, remove `dist/` (keeps `~/.openevidence-mcp` + the browser extension)                |
+| `make autostart` / `autostart-remove`                                          | macOS: keep the relay daemon running across logins/reboots/crashes via launchd · undo it                                    |
+| `make help`                                                                    | Grouped reference of every target                                                                                           |
+| `make kill-all`                                                                | Stop all MCP servers + the relay daemon and free port 8787                                                                  |
+| `make relay`                                                                   | Run the standalone relay daemon in the foreground (debug)                                                                   |
+| `make deps` / `check` / `test` / `smoke`                                       | Force install · type-check · unit tests · auth+history smoke (relay if connected, else cookies)                             |
+| `make build [HAR=…]`                                                           | Extract the fingerprint if a HAR is given, then compile TypeScript                                                          |
+| `make fingerprint HAR=…`                                                       | Extract the working browser fingerprint from a HAR                                                                          |
+| `make import-cookies COOKIES=…`                                                | Import and verify cookies                                                                                                   |
+| `make install-claude-global` / `-codex-global` / `-agy-global` / `install-all` | Register the server with the respective CLI(s)                                                                              |
 
 ## Environment variables
 
-| Variable                   | Default                                                                   | Purpose                                           |
-| -------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------- |
-| `OE_MCP_RELAY`             | `1`                                                                       | Set `0` to disable the relay entirely             |
-| `OE_MCP_RELAY_TRANSPORT`   | `all`                                                                     | `all` = every request via the extension; `off` = reads over `cookies.json` |
-| `OE_MCP_RELAY_PORT`        | `8787`                                                                     | Relay port (must match the extension)             |
-| `OE_MCP_RELAY_PID_PATH`    | `~/.openevidence-mcp/relay.pid`                                           | Relay daemon pidfile                              |
-| `OE_MCP_RELAY_LOG_PATH`    | `~/.openevidence-mcp/relay.log`                                           | Relay daemon log file                             |
-| `OE_MCP_RELAY_MIN_GAP_MS`  | `250`                                                                     | Minimum gap between any two requests the daemon hands to the browser tab, across all sessions |
-| `OE_MCP_BASE_URL`          | `https://www.openevidence.com`                                            | OpenEvidence base URL                             |
-| `OE_MCP_ARTIFACT_DIR`      | OS temp dir + `openevidence-mcp`                                          | Artifact output directory                         |
-| `OE_MCP_CROSSREF_MAILTO`   | unset                                                                     | Optional Crossref polite-pool email               |
-| `OE_MCP_CROSSREF_VALIDATE` | `1`                                                                       | Set `0` to skip Crossref validation               |
-| `OE_MCP_ASK_MIN_INTERVAL_MS` | `1000`                                                                  | Minimum spacing between questions (`oe_ask`); waits, never errors; `0` disables. Also sets the daemon's ask-lane spacing: one ask in flight, the next dispatched this long after the previous completes |
-| `OE_MCP_POLL_INTERVAL_MS`  | `1200`                                                                    | Poll interval when waiting for an answer          |
-| `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                              |
-| `OE_MCP_COOKIES_PATH`      | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file (legacy/optional path)                |
-| `OE_MCP_FINGERPRINT_PATH`  | `./openevidence-fingerprint.json` if present                              | Browser signature fingerprint (legacy path)       |
-| `OE_MCP_DB_PATH`           | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite file: collections mirror + the `answers` store (`oe_answers_search`, `oe_article_get` cache) |
-| `OE_MCP_PYTHON`            | `python3`                                                                 | Python interpreter the bridge tools spawn         |
-| `OE_MCP_LEGACY_ACCOUNT`    | `legacy`                                                                  | Label for pre-v2 rows on DB account migration     |
+| Variable                     | Default                                                                   | Purpose                                                                                                                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OE_MCP_RELAY`               | `1`                                                                       | Set `0` to disable the relay entirely                                                                                                                                                                   |
+| `OE_MCP_RELAY_TRANSPORT`     | `all`                                                                     | `all` = every request via the extension; `off` = reads over `cookies.json`                                                                                                                              |
+| `OE_MCP_RELAY_PORT`          | `8787`                                                                    | Relay port (must match the extension)                                                                                                                                                                   |
+| `OE_MCP_RELAY_PID_PATH`      | `~/.openevidence-mcp/relay.pid`                                           | Relay daemon pidfile                                                                                                                                                                                    |
+| `OE_MCP_RELAY_LOG_PATH`      | `~/.openevidence-mcp/relay.log`                                           | Relay daemon log file                                                                                                                                                                                   |
+| `OE_MCP_RELAY_MIN_GAP_MS`    | `250`                                                                     | Minimum gap between any two requests the daemon hands to the browser tab, across all sessions                                                                                                           |
+| `OE_MCP_BASE_URL`            | `https://www.openevidence.com`                                            | OpenEvidence base URL                                                                                                                                                                                   |
+| `OE_MCP_ARTIFACT_DIR`        | OS temp dir + `openevidence-mcp`                                          | Artifact output directory                                                                                                                                                                               |
+| `OE_MCP_CROSSREF_MAILTO`     | unset                                                                     | Optional Crossref polite-pool email                                                                                                                                                                     |
+| `OE_MCP_CROSSREF_VALIDATE`   | `1`                                                                       | Set `0` to skip Crossref validation                                                                                                                                                                     |
+| `OE_MCP_ASK_MIN_INTERVAL_MS` | `1000`                                                                    | Minimum spacing between questions (`oe_ask`); waits, never errors; `0` disables. Also sets the daemon's ask-lane spacing: one ask in flight, the next dispatched this long after the previous completes |
+| `OE_MCP_POLL_INTERVAL_MS`    | `1200`                                                                    | Poll interval when waiting for an answer                                                                                                                                                                |
+| `OE_MCP_POLL_TIMEOUT_MS`     | `180000`                                                                  | Default poll timeout                                                                                                                                                                                    |
+| `OE_MCP_COOKIES_PATH`        | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file (legacy/optional path)                                                                                                                                                                      |
+| `OE_MCP_FINGERPRINT_PATH`    | `./openevidence-fingerprint.json` if present                              | Browser signature fingerprint (legacy path)                                                                                                                                                             |
+| `OE_MCP_DB_PATH`             | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite file: collections mirror + the `answers` store (`oe_answers_search`, `oe_article_get` cache)                                                                                               |
+| `OE_MCP_PYTHON`              | `python3`                                                                 | Python interpreter the bridge tools spawn                                                                                                                                                               |
+| `OE_MCP_LEGACY_ACCOUNT`      | `legacy`                                                                  | Label for pre-v2 rows on DB account migration                                                                                                                                                           |
 
 ## Project files
 
