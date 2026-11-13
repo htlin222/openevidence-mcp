@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1163 446" width="1163" height="446" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, 'Noto Sans TC', sans-serif" role="img" aria-label="openevidence-mcp architecture">
+<title>openevidence-mcp architecture</title>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#111111" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect x="287" y="140.0" width="848" height="278" rx="18" fill="none" stroke="#111111" stroke-width="1.2" stroke-dasharray="6 6"/>
+<text x="309" y="171.0" font-size="19" font-weight="600" fill="#111111">Your machine</text>
+<path d="M254.0,226.0 L313.0,226.0" fill="none" stroke="#111111" stroke-width="1.5" marker-start="url(#a)" marker-end="url(#a)"/>
+<path d="M426.0,264.0 L426.0,316.0" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M539.0,226.0 L598.0,226.0" fill="none" stroke="#111111" stroke-width="1.5" marker-start="url(#a)" marker-end="url(#a)"/>
+<path d="M824.0,226.0 L883.0,226.0" fill="none" stroke="#111111" stroke-width="1.5" marker-start="url(#a)" marker-end="url(#a)"/>
+<path d="M996.0,188.0 L996.0,104.0" fill="none" stroke="#111111" stroke-width="1.5" marker-start="url(#a)" marker-end="url(#a)"/>
+<rect x="28" y="188.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="141.0" y="222.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">MCP clients</text>
+<text x="141.0" y="245.0" font-size="10.6" text-anchor="middle" fill="#6b6b6b">Claude Code · Codex · many sessions</text>
+<rect x="313" y="188.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="426.0" y="222.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">MCP server</text>
+<text x="426.0" y="245.0" font-size="14.0" text-anchor="middle" fill="#6b6b6b">oe_ask · oe_article_get</text>
+<rect x="313" y="316.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="426.0" y="350.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">Artifacts</text>
+<text x="426.0" y="373.0" font-size="14.0" text-anchor="middle" fill="#6b6b6b">answers · BibTeX</text>
+<rect x="598" y="188.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="711.0" y="222.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">Relay daemon</text>
+<text x="711.0" y="245.0" font-size="11.3" text-anchor="middle" fill="#6b6b6b">port 8787 · auto-spawned · shared</text>
+<rect x="883" y="188.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="996.0" y="222.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">Browser extension</text>
+<text x="996.0" y="245.0" font-size="14.0" text-anchor="middle" fill="#6b6b6b">logged-in Chromium tab</text>
+<rect x="883" y="28.0" width="226" height="76" rx="10" fill="#ffffff" stroke="#111111" stroke-width="1.5"/>
+<text x="996.0" y="62.0" font-size="19.0" font-weight="600" text-anchor="middle" fill="#111111">OpenEvidence</text>
+<text x="996.0" y="85.0" font-size="14.0" text-anchor="middle" fill="#6b6b6b">openevidence.com</text>
+</svg>

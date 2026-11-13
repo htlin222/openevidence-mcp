@@ -19,6 +19,13 @@
   <img alt="Unofficial" src="https://img.shields.io/badge/OpenEvidence-unofficial-yellow">
 </p>
 
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
+  <img alt="openevidence-mcp architecture" src="docs/architecture.svg">
+</picture>
+
 ## What it does
 
 OpenEvidence protects its API with bot detection that blocks plain server requests. This project removes that problem: when your AI tool asks OpenEvidence a question, the request is run **inside your own logged-in OpenEvidence browser tab** — so it carries your genuine browser session and is never challenged.
@@ -28,16 +35,6 @@ A small **Chromium browser extension** lends its session to a localhost relay; t
 It is designed for local personal workflows where you already have lawful access to OpenEvidence. It does not bypass authentication, remove access controls, redistribute OpenEvidence content, or include any OpenEvidence data in this repository.
 
 ## How it works
-
-```
-  Claude / Codex / any MCP client
-            │  asks a question (oe_ask)
-            ▼
-     openevidence-mcp  ──▶  relay daemon  ──▶  browser extension  ──▶  your logged-in
-       (stdio server)      127.0.0.1:8787       (runs the fetch)        OpenEvidence tab
-            ▲              shared · auto-spawned                              │
-            └──────────────────────── answer ◀───────────────────────────────┘
-```
 
 Nothing navigates or pops up — the tab stays where it is. The extension only ever talks to `openevidence.com` and your local relay (`127.0.0.1`). The relay runs as a **shared daemon** that owns port 8787 and outlives every session, so any number of Claude/Codex sessions funnel through the **one** logged-in tab.
 
