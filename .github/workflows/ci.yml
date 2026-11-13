@@ -2,8 +2,8 @@ name: CI
 on: [push, pull_request]
 jobs:
   ci:
-    uses: htlin222/.github/.github/workflows/node-ci.yml@main
+    uses: htlin222/.github/.github/workflows/node-ci.yml@develope
   extension:
-    uses: htlin222/.github/.github/workflows/node-ci.yml@main
+    uses: htlin222/.github/.github/workflows/node-ci.yml@develope
     with:
       working-directory: extension
